@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="np_bg">#08090B</color>
+    <color name="np_surface">#14171D</color>
+    <color name="np_card">#1B1F27</color>
+    <color name="np_text">#F5F7FA</color>
+    <color name="np_muted">#9BA3B0</color>
+    <color name="np_cyan">#2BE4EA</color>
+    <color name="np_red">#F24848</color>
+</resources>

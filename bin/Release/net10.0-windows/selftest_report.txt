@@ -1,0 +1,22 @@
+[PASS] Liquid Glass is enabled by default out of the box (Theme == SurfaceTheme.LiquidGlass)
+[PASS] Liquid Glass Blur Slider clamps strictly to [0..40px] and commits atomically on render tick
+[METRIC] Theme ambience draw cost (Sakura, closed island): 0.09 ms/frame
+[PASS] Animated theme ambience stays inside the 60 fps frame budget (< 16.7 ms)
+[PASS] Crash-Proof Liquid Glass & All 11 Themes: Stress-tested slider 0..40px across all 10 tabs cleanly
+[PASS] Disableable Game Overlay supports Off/Hide completely, Slim FPS/CPU/GPU strip, and Normal modes
+[PASS] Desktop Day Clock Widget pins, renders with Liquid Glass live wallpaper sampling, and unpins cleanly
+[PASS] Live Video Wallpaper engine initializes, renders desktop frames, and disposes cleanly
+[PASS] Zero Placeholders: Media starts with HasSession=false and no dummy songs ('Midnight City')
+[PASS] Zero Placeholders: Desktop CPU temperature does not invent fake motherboard temps
+[PASS] Real CoreAudio Volume Hook + 0.5.119 Device-Switch Guard: No false pop-up on audio device shift
+[PASS] Free Buff Coding Agent integration: Detects Working, Almost done (95%), and Needs input alerts
+[PASS] PC Deck TLS Cert Pinning, 2-Min Pairing, Device Metadata & Live State Protocol
+[PASS] Settings contains all 13 OpenPixel categories (General..About)
+[PASS] Closeable Settings Window: Toggles and closes cleanly without clipping
+[PASS] Glass blur slider sweeps 0-40 px through the real Settings window without crashing
+[METRIC] Blur slider sweep (41 settings frames): 385 ms
+[PASS] 100% Local Atomic JSON Config Persistence (%LOCALAPPDATA%\OpenPixel\settings.json)
+[METRIC] Managed Heap RAM: 1.09 MB
+[PASS] Low Memory Footprint well within ~13-34 MB budget
+
+Summary: 17 passed, 0 failed.

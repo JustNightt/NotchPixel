@@ -1,0 +1,78 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>OpenPixel</AssemblyName>
+    <RootNamespace>OpenPixel</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <NoWarn>CA1416;WFO1000</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="csharp\**\*.cs" />
+  </ItemGroup>
+
+  <!-- Keep the runnable OpenPixel.exe in the repository root identical to every
+       Release build (apphost + its runtime files must sit next to the exe).
+       A running OpenPixel holds these files open, so the build closes it and
+       retries: after every Release build the root copies are the new ones. -->
+  <Target Name="RefreshRootExecutable" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <PropertyGroup>
+      <RootAppDir>$(MSBuildProjectDirectory)\</RootAppDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <RootAppFiles Include="$(TargetDir)OpenPixel.exe" />
+      <RootAppFiles Include="$(TargetDir)OpenPixel.dll" />
+      <RootAppFiles Include="$(TargetDir)OpenPixel.deps.json" />
+      <RootAppFiles Include="$(TargetDir)OpenPixel.runtimeconfig.json" />
+      <RootAppFilesAtRoot Include="@(RootAppFiles->'$(RootAppDir)%(Filename)%(Extension)')" />
+    </ItemGroup>
+
+    <!-- Harmless attempt first: works when nothing is running. -->
+    <Copy SourceFiles="@(RootAppFiles)" DestinationFolder="$(MSBuildProjectDirectory)"
+          SkipUnchangedFiles="true" ContinueOnError="WarnAndContinue" Retries="0" />
+
+    <PropertyGroup>
+      <_RootAppFilesExist>false</_RootAppFilesExist>
+      <_RootAppFilesExist Condition="Exists('$(RootAppDir)OpenPixel.exe') and Exists('$(RootAppDir)OpenPixel.dll') and Exists('$(RootAppDir)OpenPixel.deps.json') and Exists('$(RootAppDir)OpenPixel.runtimeconfig.json')">true</_RootAppFilesExist>
+    </PropertyGroup>
+
+    <!-- Compare every file, not just the apphost: OpenPixel.exe is generic and
+         can be byte-identical while OpenPixel.dll still holds old code. -->
+    <GetFileHash Files="@(RootAppFiles)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_FreshAppHashes" />
+    </GetFileHash>
+    <GetFileHash Files="@(RootAppFilesAtRoot)" Algorithm="SHA256" Condition="'$(_RootAppFilesExist)' == 'true'">
+      <Output TaskParameter="Items" ItemName="_RootAppHashes" />
+    </GetFileHash>
+
+    <PropertyGroup>
+      <_RootAppNeedsRefresh Condition="'$(_RootAppFilesExist)' != 'true' or '@(_FreshAppHashes->'%(Filename)%(Extension)=%(FileHash)')' != '@(_RootAppHashes->'%(Filename)%(Extension)=%(FileHash)')'">true</_RootAppNeedsRefresh>
+    </PropertyGroup>
+
+    <Message Condition="'$(_RootAppNeedsRefresh)' == 'true'" Importance="high"
+             Text="Replacing root OpenPixel.exe with the new build." />
+
+    <!-- Stale copies mean the app is running: close it so the files can be written. -->
+    <Exec Condition="'$(_RootAppNeedsRefresh)' == 'true'" Command="taskkill /F /IM OpenPixel.exe"
+          IgnoreExitCode="true" ContinueOnError="WarnAndContinue"
+          StandardOutputImportance="low" StandardErrorImportance="low" />
+
+    <!-- Retries cover the moment while a terminated app releases its handles. -->
+    <Copy Condition="'$(_RootAppNeedsRefresh)' == 'true'"
+          SourceFiles="@(RootAppFiles)" DestinationFolder="$(MSBuildProjectDirectory)"
+          Retries="10" RetryDelayMilliseconds="300" />
+
+    <GetFileHash Files="@(RootAppFilesAtRoot)" Algorithm="SHA256" Condition="Exists('$(RootAppDir)OpenPixel.dll')">
+      <Output TaskParameter="Items" ItemName="_RootAppHashesAfter" />
+    </GetFileHash>
+    <Error Condition="'@(_FreshAppHashes->'%(Filename)%(Extension)=%(FileHash)')' != '@(_RootAppHashesAfter->'%(Filename)%(Extension)=%(FileHash)')'"
+           Text="The root OpenPixel.exe/dll could not be replaced with the new build (still locked by another process)." />
+  </Target>
+</Project>

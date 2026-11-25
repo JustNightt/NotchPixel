@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.OpenPixelDeck" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/np_bg</item>
+        <item name="android:statusBarColor">@color/np_bg</item>
+        <item name="android:navigationBarColor">@color/np_bg</item>
+        <item name="android:textColorPrimary">@color/np_text</item>
+        <item name="android:textColorSecondary">@color/np_muted</item>
+    </style>
+</resources>
