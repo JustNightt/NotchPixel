@@ -1,11 +1,24 @@
-# Build outputs
+# Build outputs & local tool caches
 bin/
 obj/
 build/
+releases/
+runtimes/
 App/build/
+App/main.apk
 .vs/
 .tmp/
 .nuget_packages/
+.dotnet_appdata/
+.dotnet_home/
+
+# Root-copied compiled binaries & runtime DLLs (rebuilt automatically on build/publish)
+/*.exe
+/*.dll
+/OpenPixel.deps.json
+/OpenPixel.runtimeconfig.json
+*.pdb
+*.idsig
 
 # Local runtime data, private keys & certificates
 OpenPixelData/
@@ -32,6 +45,3 @@ hud_snapshots/
 *_preview.png
 video_test_frame.png
 Images/Screenshot*.png
-
-# Compiled binaries in root (rebuild via dotnet build / App/build_apk.ps1)
-*.pdb
