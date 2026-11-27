@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <WindowsSdkPackageVersion>10.0.19041.57</WindowsSdkPackageVersion>
     <UseWindowsForms>true</UseWindowsForms>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>disable</Nullable>
@@ -16,6 +17,21 @@
 
   <ItemGroup>
     <Compile Include="csharp\**\*.cs" />
+    <Compile Remove="tests\**" />
+    <None Remove="tests\**" />
+    <EmbeddedResource Remove="tests\**" />
+    <!-- Inter ships inside the assembly so the UI font never depends on the PC. -->
+    <EmbeddedResource Include="assets\island\*.png">
+      <LogicalName>OpenPixel.Island.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\fonts\*.ttf">
+      <LogicalName>OpenPixel.Fonts.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4370.26" />
+    <PackageReference Include="System.Management" Version="10.0.2" />
   </ItemGroup>
 
   <!-- Keep the runnable OpenPixel.exe in the repository root identical to every
@@ -35,8 +51,7 @@
     </ItemGroup>
 
     <!-- Harmless attempt first: works when nothing is running. -->
-    <Copy SourceFiles="@(RootAppFiles)" DestinationFolder="$(MSBuildProjectDirectory)"
-          SkipUnchangedFiles="true" ContinueOnError="WarnAndContinue" Retries="0" />
+    <Copy SourceFiles="@(RootAppFiles)" DestinationFolder="$(MSBuildProjectDirectory)" SkipUnchangedFiles="true" ContinueOnError="WarnAndContinue" Retries="0" />
 
     <PropertyGroup>
       <_RootAppFilesExist>false</_RootAppFilesExist>
@@ -56,23 +71,29 @@
       <_RootAppNeedsRefresh Condition="'$(_RootAppFilesExist)' != 'true' or '@(_FreshAppHashes->'%(Filename)%(Extension)=%(FileHash)')' != '@(_RootAppHashes->'%(Filename)%(Extension)=%(FileHash)')'">true</_RootAppNeedsRefresh>
     </PropertyGroup>
 
-    <Message Condition="'$(_RootAppNeedsRefresh)' == 'true'" Importance="high"
-             Text="Replacing root OpenPixel.exe with the new build." />
+    <Message Condition="'$(_RootAppNeedsRefresh)' == 'true'" Importance="high" Text="Replacing root OpenPixel.exe with the new build." />
 
     <!-- Stale copies mean the app is running: close it so the files can be written. -->
-    <Exec Condition="'$(_RootAppNeedsRefresh)' == 'true'" Command="taskkill /F /IM OpenPixel.exe"
-          IgnoreExitCode="true" ContinueOnError="WarnAndContinue"
-          StandardOutputImportance="low" StandardErrorImportance="low" />
+    <Exec Condition="'$(_RootAppNeedsRefresh)' == 'true'" Command="taskkill /F /IM OpenPixel.exe" IgnoreExitCode="true" ContinueOnError="WarnAndContinue" StandardOutputImportance="low" StandardErrorImportance="low" />
 
     <!-- Retries cover the moment while a terminated app releases its handles. -->
-    <Copy Condition="'$(_RootAppNeedsRefresh)' == 'true'"
-          SourceFiles="@(RootAppFiles)" DestinationFolder="$(MSBuildProjectDirectory)"
-          Retries="10" RetryDelayMilliseconds="300" />
+    <Copy Condition="'$(_RootAppNeedsRefresh)' == 'true'" SourceFiles="@(RootAppFiles)" DestinationFolder="$(MSBuildProjectDirectory)" Retries="10" RetryDelayMilliseconds="300" />
 
     <GetFileHash Files="@(RootAppFilesAtRoot)" Algorithm="SHA256" Condition="Exists('$(RootAppDir)OpenPixel.dll')">
       <Output TaskParameter="Items" ItemName="_RootAppHashesAfter" />
     </GetFileHash>
-    <Error Condition="'@(_FreshAppHashes->'%(Filename)%(Extension)=%(FileHash)')' != '@(_RootAppHashesAfter->'%(Filename)%(Extension)=%(FileHash)')'"
-           Text="The root OpenPixel.exe/dll could not be replaced with the new build (still locked by another process)." />
+    <Error Condition="'@(_FreshAppHashes->'%(Filename)%(Extension)=%(FileHash)')' != '@(_RootAppHashesAfter->'%(Filename)%(Extension)=%(FileHash)')'" Text="The root OpenPixel.exe/dll could not be replaced with the new build (still locked by another process)." />
+
+    <!-- The embedded web view, WinRT projections, and System.Management need
+         their managed assemblies and native loaders (under runtimes/<rid>/native)
+         next to the root OpenPixel.exe so it stays runnable standalone. -->
+    <ItemGroup>
+      <RootRuntimeDlls Include="$(TargetDir)*.dll" Exclude="$(TargetDir)OpenPixel.dll" />
+      <RootWebNative Include="$(TargetDir)runtimes\**\*.*" />
+      <RootRuntimeDllTarget Include="@(RootRuntimeDlls->'$(RootAppDir)%(Filename)%(Extension)')" />
+      <RootWebNativeTarget Include="@(RootWebNative->'$(RootAppDir)runtimes\%(RecursiveDir)%(Filename)%(Extension)')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RootRuntimeDlls)" DestinationFiles="@(RootRuntimeDllTarget)" SkipUnchangedFiles="true" Retries="5" RetryDelayMilliseconds="200" ContinueOnError="WarnAndContinue" />
+    <Copy SourceFiles="@(RootWebNative)" DestinationFiles="@(RootWebNativeTarget)" SkipUnchangedFiles="true" Retries="5" RetryDelayMilliseconds="200" ContinueOnError="WarnAndContinue" />
   </Target>
 </Project>

@@ -44,7 +44,7 @@ public final class DeckMediaNotificationService extends Service {
     private PinnedDeckClient deckClient;
 
     private String title = "Connected to PC";
-    private String artist = "OpenPixel Deck";
+    private String artist = "NotchPixel Deck";
     private boolean isPlaying = false;
     private long lastActiveElapsedMs = 0L;
 
@@ -90,13 +90,13 @@ public final class DeckMediaNotificationService extends Service {
 
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(
-                    CHANNEL_ID, "OpenPixel Deck Media", NotificationManager.IMPORTANCE_LOW);
+                    CHANNEL_ID, "NotchPixel Deck Media", NotificationManager.IMPORTANCE_LOW);
             ch.setDescription("Lock-screen controls for PC playback");
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) nm.createNotificationChannel(ch);
         }
 
-        mediaSession = new MediaSession(this, "OpenPixelDeckMedia");
+        mediaSession = new MediaSession(this, "NotchPixelDeckMedia");
         mediaSession.setCallback(new MediaSession.Callback() {
             @Override public void onPlay() { dispatchRemote("a=play"); }
             @Override public void onPause() { dispatchRemote("a=play"); }
@@ -126,7 +126,7 @@ public final class DeckMediaNotificationService extends Service {
                 String a = intent.getStringExtra("artist");
                 boolean p = intent.getBooleanExtra("playing", false);
                 title = (t == null || t.isEmpty()) ? "No active PC media" : t;
-                artist = (a == null || a.isEmpty()) ? "OpenPixel Deck" : a;
+                artist = (a == null || a.isEmpty()) ? "NotchPixel Deck" : a;
                 isPlaying = p;
                 if (isPlaying) lastActiveElapsedMs = SystemClock.elapsedRealtime();
             }
@@ -167,7 +167,7 @@ public final class DeckMediaNotificationService extends Service {
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
 
-        return b.setSmallIcon(R.drawable.ic_notch_deck)
+        return b.setSmallIcon(R.drawable.ic_openpixel_deck)
                 .setContentTitle(title)
                 .setContentText(artist)
                 .setContentIntent(contentPi)

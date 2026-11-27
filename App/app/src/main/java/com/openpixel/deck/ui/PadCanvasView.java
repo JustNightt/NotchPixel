@@ -28,6 +28,7 @@ public final class PadCanvasView extends View {
         void onRightClick();
         void onDragStart();
         void onDragEnd();
+        void onRelease();
     }
 
     private static final class TrailDot {
@@ -52,6 +53,9 @@ public final class PadCanvasView extends View {
     private boolean trailEnabled = true;
     private boolean hapticsEnabled = true;
     private boolean lightSurface = false;
+    private int accentColor = Color.rgb(43, 228, 234);
+    private float[] cachedGridPts = null;
+    private int cachedGridW = -1, cachedGridH = -1;
 
     private float lastX, lastY, downX, downY;
     private long downTimeMs;
@@ -100,6 +104,13 @@ public final class PadCanvasView extends View {
         borderPaint.setStyle(Paint.Style.STROKE);
         borderPaint.setStrokeWidth(ctx.getResources().getDisplayMetrics().density * 1.2f);
         hintPaint.setTextAlign(Paint.Align.CENTER);
+    }
+
+    public void setAccentColor(int color) {
+        if (this.accentColor != color) {
+            this.accentColor = color;
+            invalidate();
+        }
     }
 
     public void configure(int padSpd, int scrollSpd, boolean trailOn, boolean hapticsOn, boolean light) {
@@ -235,6 +246,16 @@ public final class PadCanvasView extends View {
                     vibrateLight();
                     if (sink != null) sink.onRightClick();
                 }
+                if (ev.getPointerCount() > 1) {
+                    int upIdx = ev.getActionIndex();
+                    int remIdx = (upIdx == 0) ? 1 : 0;
+                    if (remIdx < ev.getPointerCount()) {
+                        lastX = ev.getX(remIdx);
+                        lastY = ev.getY(remIdx);
+                        activeCursorX = lastX;
+                        activeCursorY = lastY;
+                    }
+                }
                 return true;
 
             case MotionEvent.ACTION_UP:
@@ -251,6 +272,8 @@ public final class PadCanvasView extends View {
                     if (sink != null) sink.onLeftClick();
                 }
                 twoFingerMode = false;
+                accumDx = accumDy = accumScroll = 0f;
+                if (sink != null) sink.onRelease();
                 invalidate();
                 return true;
         }
@@ -266,37 +289,72 @@ public final class PadCanvasView extends View {
         float rad = 24 * dp;
         bounds.set(dp, dp, w - dp, h - dp);
 
-        surfacePaint.setColor(lightSurface ? Color.argb(236, 234, 240, 248) : Color.argb(235, 19, 23, 30));
+        surfacePaint.setColor(lightSurface ? Color.argb(185, 245, 248, 252) : Color.argb(46, 255, 255, 255));
         canvas.drawRoundRect(bounds, rad, rad, surfacePaint);
 
-        // Dot grid matrix
-        float spacing = 18 * dp;
-        gridDotPaint.setColor(lightSurface ? Color.argb(46, 30, 45, 70) : Color.argb(56, 175, 195, 220));
-        for (float gx = spacing; gx < w - spacing * 0.5f; gx += spacing) {
-            for (float gy = spacing; gy < h - spacing * 0.5f; gy += spacing) {
-                canvas.drawCircle(gx, gy, 1.3f * dp, gridDotPaint);
+        // Cached dot grid matrix (single native drawPoints call -> zero lag)
+        if (cachedGridPts == null || cachedGridW != w || cachedGridH != h) {
+            cachedGridW = w;
+            cachedGridH = h;
+            float spacing = 20 * dp;
+            int cols = Math.max(0, (int) ((w - spacing * 1.5f) / spacing));
+            int rows = Math.max(0, (int) ((h - spacing * 1.5f) / spacing));
+            cachedGridPts = new float[cols * rows * 2];
+            int idx = 0;
+            for (int r = 0; r < rows; r++) {
+                float gy = spacing + r * spacing;
+                for (int c = 0; c < cols; c++) {
+                    cachedGridPts[idx++] = spacing + c * spacing;
+                    cachedGridPts[idx++] = gy;
+                }
             }
         }
+        gridDotPaint.setColor(lightSurface ? Color.argb(56, 30, 45, 70) : Color.argb(66, 210, 225, 245));
+        gridDotPaint.setStrokeWidth(2.4f * dp);
+        gridDotPaint.setStrokeCap(Paint.Cap.ROUND);
+        if (cachedGridPts.length > 0) {
+            canvas.drawPoints(cachedGridPts, gridDotPaint);
+        }
 
-        // Cyan square dot-matrix pointer trail
+        // Smooth tapered glowing ribbon trail (no jagged squares)
+        int ar = Color.red(accentColor), ag = Color.green(accentColor), ab = Color.blue(accentColor);
         long now = System.currentTimeMillis();
-        if (trailEnabled) {
-            for (int i = 0; i < trail.size(); i++) {
-                TrailDot d = trail.get(i);
-                float age = (now - d.birthMs) / 380f;
+        if (trailEnabled && trail.size() >= 2) {
+            trailPaint.setStyle(Paint.Style.STROKE);
+            trailPaint.setStrokeCap(Paint.Cap.ROUND);
+            trailPaint.setStrokeJoin(Paint.Join.ROUND);
+            for (int i = 1; i < trail.size(); i++) {
+                TrailDot p0 = trail.get(i - 1);
+                TrailDot p1 = trail.get(i);
+                float age = (now - p1.birthMs) / 320f;
                 if (age >= 1f) continue;
-                float alpha = 1f - age;
-                float sz = (6f + 6f * alpha) * dp;
-                trailPaint.setColor(Color.argb((int) (alpha * 220), 43, 228, 234));
-                canvas.drawRect(d.x - sz * 0.5f, d.y - sz * 0.5f, d.x + sz * 0.5f, d.y + sz * 0.5f, trailPaint);
+                float frac = (float) i / Math.max(1, trail.size() - 1);
+                float fade = (1f - age) * (0.25f + 0.75f * frac);
+                // Soft outer glow stroke
+                trailPaint.setStrokeWidth((4f + 11f * fade) * dp);
+                trailPaint.setColor(Color.argb((int) (fade * 72), ar, ag, ab));
+                canvas.drawLine(p0.x, p0.y, p1.x, p1.y, trailPaint);
+                // Crisp fluid core ribbon
+                trailPaint.setStrokeWidth((2f + 4.5f * fade) * dp);
+                trailPaint.setColor(Color.argb((int) (fade * 225), ar, ag, ab));
+                canvas.drawLine(p0.x, p0.y, p1.x, p1.y, trailPaint);
             }
+            trailPaint.setStyle(Paint.Style.FILL);
         }
 
         if (activeCursorX >= 0f && activeCursorY >= 0f) {
-            float sz = (draggingLock ? 18f : 14f) * dp;
-            trailPaint.setColor(draggingLock ? Color.argb(240, 255, 198, 60) : Color.argb(245, 43, 228, 234));
-            canvas.drawRect(activeCursorX - sz * 0.5f, activeCursorY - sz * 0.5f,
-                    activeCursorX + sz * 0.5f, activeCursorY + sz * 0.5f, trailPaint);
+            int cr = draggingLock ? 255 : ar;
+            int cg = draggingLock ? 198 : ag;
+            int cb = draggingLock ? 60 : ab;
+            float outerR = (draggingLock ? 17f : 13.5f) * dp;
+            float innerR = (draggingLock ? 7.5f : 5.5f) * dp;
+            trailPaint.setStyle(Paint.Style.FILL);
+            trailPaint.setColor(Color.argb(64, cr, cg, cb));
+            canvas.drawCircle(activeCursorX, activeCursorY, outerR, trailPaint);
+            trailPaint.setColor(Color.argb(235, cr, cg, cb));
+            canvas.drawCircle(activeCursorX, activeCursorY, innerR, trailPaint);
+            trailPaint.setColor(Color.argb(230, 255, 255, 255));
+            canvas.drawCircle(activeCursorX, activeCursorY, innerR * 0.45f, trailPaint);
         }
 
         borderPaint.setColor(draggingLock
@@ -304,11 +362,17 @@ public final class PadCanvasView extends View {
                 : (lightSurface ? Color.argb(75, 25, 35, 50) : Color.argb(75, 255, 255, 255)));
         canvas.drawRoundRect(bounds, rad, rad, borderPaint);
 
-        hintPaint.setTextSize(12 * dp);
-        hintPaint.setColor(lightSurface ? Color.argb(145, 55, 65, 80) : Color.argb(140, 175, 185, 200));
+        hintPaint.setTextSize(10.5f * dp);
+        hintPaint.setColor(lightSurface ? Color.argb(150, 55, 65, 80) : Color.argb(155, 185, 195, 210));
         String hint = draggingLock
-                ? "DRAG LOCKED - release to drop"
-                : "Tap = Click  |  2-Finger Tap = Right Click  |  2-Finger = Scroll";
-        canvas.drawText(hint, w / 2f, h - 14 * dp, hintPaint);
+                ? "DRAG LOCKED · release to drop"
+                : "Tap: Click  ·  2-Finger: Right Click / Scroll";
+        canvas.drawText(hint, w / 2f, h - 13 * dp, hintPaint);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        handler.removeCallbacksAndMessages(null);
+        super.onDetachedFromWindow();
     }
 }

@@ -43,6 +43,9 @@ public final class SecurePairingStore {
     private boolean trailEnabled = true;
     private String lookMode = "Frosted"; // Frosted, Auto, Dark, Light
     private boolean mediaNotifEnabled = true;
+    private boolean audioWaveEnabled = true;
+    private boolean syncMusicColorEnabled = true;
+    private String gradientPreset = "None"; // None, Midnight, Crimson, Aurora, Emerald
 
     public SecurePairingStore(Context ctx) {
         this.prefs = ctx.getApplicationContext().getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
@@ -95,11 +98,16 @@ public final class SecurePairingStore {
         return new String(cipher.doFinal(ct), StandardCharsets.UTF_8);
     }
 
+    public synchronized void reload() {
+        load();
+    }
+
     private synchronized void load() {
         String blob = prefs.getString(KEY_BLOB, "");
         if (!blob.isEmpty()) {
             try {
-                JSONObject o = new JSONObject(decryptString(blob));
+                String json = blob.startsWith("PLAIN:") ? blob.substring(6) : decryptString(blob);
+                JSONObject o = new JSONObject(json);
                 token = o.optString("token", "");
                 pcIp = o.optString("pcIp", "");
                 tlsPort = o.optInt("tlsPort", 47825);
@@ -110,6 +118,9 @@ public final class SecurePairingStore {
             } catch (Exception ignored) {
                 token = "";
             }
+        } else {
+            token = "";
+            pcIp = "";
         }
         String ui = prefs.getString(KEY_SETTINGS, "");
         if (!ui.isEmpty()) {
@@ -121,6 +132,9 @@ public final class SecurePairingStore {
                 trailEnabled = s.optBoolean("trail", true);
                 lookMode = s.optString("look", "Frosted");
                 mediaNotifEnabled = s.optBoolean("mediaNotif", true);
+                audioWaveEnabled = s.optBoolean("audioWave", true);
+                syncMusicColorEnabled = s.optBoolean("syncMusicColor", true);
+                gradientPreset = s.optString("gradientPreset", "None");
             } catch (Exception ignored) { }
         }
     }
@@ -135,7 +149,14 @@ public final class SecurePairingStore {
             o.put("macAddress", macAddress);
             o.put("pcName", pcName);
             o.put("keyFingerprint", keyFingerprint);
-            prefs.edit().putString(KEY_BLOB, encryptString(o.toString())).apply();
+            String payload = o.toString();
+            String stored;
+            try {
+                stored = encryptString(payload);
+            } catch (Exception ksErr) {
+                stored = "PLAIN:" + payload;
+            }
+            prefs.edit().putString(KEY_BLOB, stored).commit();
         } catch (Exception ignored) { }
     }
 
@@ -148,6 +169,9 @@ public final class SecurePairingStore {
             s.put("trail", trailEnabled);
             s.put("look", lookMode);
             s.put("mediaNotif", mediaNotifEnabled);
+            s.put("audioWave", audioWaveEnabled);
+            s.put("syncMusicColor", syncMusicColorEnabled);
+            s.put("gradientPreset", gradientPreset);
             prefs.edit().putString(KEY_SETTINGS, s.toString()).apply();
         } catch (Exception ignored) { }
     }
@@ -204,4 +228,10 @@ public final class SecurePairingStore {
     public synchronized void setLookMode(String v) { lookMode = v == null ? "Frosted" : v; persistUiPrefs(); }
     public synchronized boolean isMediaNotifEnabled() { return mediaNotifEnabled; }
     public synchronized void setMediaNotifEnabled(boolean v) { mediaNotifEnabled = v; persistUiPrefs(); }
+    public synchronized boolean isAudioWaveEnabled() { return audioWaveEnabled; }
+    public synchronized void setAudioWaveEnabled(boolean v) { audioWaveEnabled = v; persistUiPrefs(); }
+    public synchronized boolean isSyncMusicColorEnabled() { return syncMusicColorEnabled; }
+    public synchronized void setSyncMusicColorEnabled(boolean v) { syncMusicColorEnabled = v; persistUiPrefs(); }
+    public synchronized String getGradientPreset() { return gradientPreset; }
+    public synchronized void setGradientPreset(String v) { gradientPreset = v == null ? "None" : v; persistUiPrefs(); }
 }

@@ -5,6 +5,8 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 
+import com.openpixel.deck.qr.PairingUriParser;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -12,7 +14,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -20,9 +24,11 @@ import java.security.MessageDigest;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -45,6 +51,40 @@ public final class PinnedDeckClient {
         public String label = "";
         public String target = "";
         public boolean configured;
+        public String iconB64 = "";
+    }
+
+    public static final class ShelfItem {
+        public int index;
+        public String name = "";
+        public String ext = "";
+        public long sizeBytes;
+        public boolean isImage;
+        public String thumbB64 = "";
+    }
+
+    public static final class ClipItem {
+        public int index;
+        public String text = "";
+        public boolean pinned;
+    }
+
+    public static final class TodoItem {
+        public int index;
+        public String text = "";
+        public boolean done;
+    }
+
+    public static final class DeviceInfo {
+        public String deviceId = "";
+        public String deviceName = "";
+        public String model = "";
+        public String osVersion = "";
+        public String appVersion = "";
+        public String ipAddress = "";
+        public String keyFingerprint = "";
+        public long pairedAtMs;
+        public boolean isCurrent;
     }
 
     public static final class PcState {
@@ -69,7 +109,19 @@ public final class PinnedDeckClient {
         public int posSec;
         public int durSec;
         public String accentHex = "#2BE4EA";
+        public String albumArtB64 = "";
+        public int audioLevel = 0;
+        // Synced from Windows NotchPixel theme
+        public String themeName = "LiquidGlass";
+        public boolean themeIsLight = false;
+        public boolean themeIsGlass = true;
+        public int themeBlurRadius = 20;
+        public String themeAccentHex = "#2BE4EA";
+        public String themeSurfaceHex = "#101216";
         public final List<AppSlot> apps = new ArrayList<>();
+        public final List<ShelfItem> shelf = new ArrayList<>();
+        public final List<ClipItem> clipboard = new ArrayList<>();
+        public final List<TodoItem> todos = new ArrayList<>();
     }
 
     public static final class ProbeResult {
@@ -87,6 +139,10 @@ public final class PinnedDeckClient {
 
     private final Context appContext;
     private final SecurePairingStore store;
+    private volatile String cachedFp = null;
+    private volatile SSLSocketFactory cachedFactory = null;
+    private DatagramSocket padUdpSocket = null;
+    private final Object udpLock = new Object();
 
     public PinnedDeckClient(Context ctx, SecurePairingStore store) {
         this.appContext = ctx.getApplicationContext();
@@ -107,7 +163,7 @@ public final class PinnedDeckClient {
     }
 
     private SSLSocketFactory buildPinnedSocketFactory(final String expectedFp, final String[] observedFpOut) throws Exception {
-        final String expectedLower = expectedFp == null ? "" : expectedFp.trim().toLowerCase(Locale.US);
+        final String expectedLower = PairingUriParser.normalizeFingerprint(expectedFp);
         TrustManager[] tm = new TrustManager[]{
                 new X509TrustManager() {
                     @Override public void checkClientTrusted(X509Certificate[] chain, String authType) {}
@@ -139,14 +195,28 @@ public final class PinnedDeckClient {
 
     private static final HostnameVerifier LAN_HOST_VERIFIER = (hostname, session) -> true;
 
+    private SSLSocketFactory getOrBuildPinnedSocketFactory(final String expectedFp, final String[] observedFpOut) throws Exception {
+        final String expectedLower = PairingUriParser.normalizeFingerprint(expectedFp);
+        if (observedFpOut == null && !expectedLower.isEmpty() && expectedLower.equals(cachedFp) && cachedFactory != null) {
+            return cachedFactory;
+        }
+        SSLSocketFactory f = buildPinnedSocketFactory(expectedLower, observedFpOut);
+        if (observedFpOut == null && !expectedLower.isEmpty()) {
+            cachedFp = expectedLower;
+            cachedFactory = f;
+        }
+        return f;
+    }
+
     private String requestJson(String method, String ip, int port, String pathAndQuery,
-                               String expectedFp, int timeoutMs, String[] observedFpOut) throws Exception {
+                               String expectedFp, int connectTimeoutMs, int readTimeoutMs,
+                               String[] observedFpOut) throws Exception {
         URL url = new URL("https://" + ip + ":" + port + pathAndQuery);
         HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
-        conn.setSSLSocketFactory(buildPinnedSocketFactory(expectedFp, observedFpOut));
+        conn.setSSLSocketFactory(getOrBuildPinnedSocketFactory(expectedFp, observedFpOut));
         conn.setHostnameVerifier(LAN_HOST_VERIFIER);
-        conn.setConnectTimeout(timeoutMs);
-        conn.setReadTimeout(timeoutMs);
+        conn.setConnectTimeout(connectTimeoutMs);
+        conn.setReadTimeout(readTimeoutMs);
         conn.setRequestMethod(method);
         conn.setDoInput(true);
         int code = conn.getResponseCode();
@@ -160,6 +230,9 @@ public final class PinnedDeckClient {
         String body = new String(bos.toByteArray(), StandardCharsets.UTF_8);
         if (code == 401 || code == 403) {
             throw new SecurityException("HTTP " + code + ": " + body);
+        }
+        if (code >= 400) {
+            throw new IllegalStateException("HTTP " + code + ": " + body);
         }
         return body;
     }
@@ -175,15 +248,17 @@ public final class PinnedDeckClient {
                     + "&model=" + devName
                     + "&os=" + osVer
                     + "&app=1.0.5";
-            String body = requestJson("POST", ip.trim(), port <= 0 ? 47825 : port, q, expectedCertFp, 15000, observedFp);
+            String normalizedExpected = PairingUriParser.normalizeFingerprint(expectedCertFp);
+            String body = requestJson("POST", ip.trim(), port <= 0 ? 47825 : port, q,
+                    normalizedExpected, 5000, 45000, observedFp);
             JSONObject obj = new JSONObject(body);
             if (!obj.optBoolean("paired", false)) {
                 out.ok = false;
                 out.error = obj.optString("error", "Pairing rejected");
                 return out;
             }
-            String certFp = obj.optString("certFingerprint", observedFp[0]);
-            if (certFp.isEmpty()) certFp = observedFp[0];
+            String certFp = PairingUriParser.normalizeFingerprint(obj.optString("certFingerprint", observedFp[0]));
+            if (certFp.isEmpty()) certFp = PairingUriParser.normalizeFingerprint(observedFp[0]);
             store.savePairing(
                     obj.optString("token", ""),
                     ip.trim(),
@@ -206,7 +281,7 @@ public final class PinnedDeckClient {
         try (DatagramSocket sock = new DatagramSocket()) {
             sock.setBroadcast(true);
             sock.setSoTimeout(900);
-            byte[] req = "OPENPIXEL_DECK_DISCOVER".getBytes(StandardCharsets.UTF_8);
+            byte[] req = "NOTCHPIXEL_DECK_DISCOVER".getBytes(StandardCharsets.UTF_8);
             sock.send(new DatagramPacket(req, req.length, InetAddress.getByName("255.255.255.255"), DISCOVERY_UDP_PORT));
             byte[] buf = new byte[1024];
             DatagramPacket resp = new DatagramPacket(buf, buf.length);
@@ -217,7 +292,7 @@ public final class PinnedDeckClient {
             pr.pcName = o.optString("pcName", "Desk PC");
             pr.ip = o.optString("ip", resp.getAddress().getHostAddress());
             pr.tlsPort = o.optInt("tlsPort", 47825);
-            pr.certFingerprint = o.optString("certFingerprint", "").toLowerCase(Locale.US);
+            pr.certFingerprint = PairingUriParser.normalizeFingerprint(o.optString("certFingerprint", ""));
             pr.mac = o.optString("mac", "");
             return pr;
         } catch (Exception ignored) {
@@ -225,8 +300,44 @@ public final class PinnedDeckClient {
         }
     }
 
+    private String resolveLocalIpv4Prefix() {
+        try {
+            WifiManager wm = (WifiManager) appContext.getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                WifiInfo wi = wm.getConnectionInfo();
+                if (wi != null) {
+                    int ipInt = wi.getIpAddress();
+                    if (ipInt != 0) {
+                        return String.format(Locale.US, "%d.%d.%d.",
+                                (ipInt & 0xff), ((ipInt >> 8) & 0xff), ((ipInt >> 16) & 0xff));
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+
+        try {
+            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            if (ifaces != null) {
+                while (ifaces.hasMoreElements()) {
+                    NetworkInterface ni = ifaces.nextElement();
+                    if (!ni.isUp() || ni.isLoopback()) continue;
+                    Enumeration<InetAddress> addrs = ni.getInetAddresses();
+                    while (addrs.hasMoreElements()) {
+                        InetAddress addr = addrs.nextElement();
+                        if (addr instanceof Inet4Address && addr.isSiteLocalAddress() && !addr.isLoopbackAddress()) {
+                            byte[] b = addr.getAddress();
+                            return String.format(Locale.US, "%d.%d.%d.",
+                                    (b[0] & 0xFF), (b[1] & 0xFF), (b[2] & 0xFF));
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
     public boolean rediscoverPcIp() {
-        String pinnedFp = store.getCertFingerprint();
+        String pinnedFp = PairingUriParser.normalizeFingerprint(store.getCertFingerprint());
         if (pinnedFp.isEmpty()) return false;
 
         ProbeResult udp = discoverViaUdpBroadcast();
@@ -235,41 +346,41 @@ public final class PinnedDeckClient {
             return true;
         }
 
-        // Fallback: scan local Wi-Fi /24 subnet for pinned /deck/probe cert match
+        // Fallback: scan local Wi-Fi /24 subnet for pinned /deck/probe cert match, returning on first match
+        String prefix = resolveLocalIpv4Prefix();
+        if (prefix == null || prefix.isEmpty()) return false;
+
+        final int port = store.getTlsPort();
+        ExecutorService pool = Executors.newFixedThreadPool(24);
         try {
-            WifiManager wm = (WifiManager) appContext.getSystemService(Context.WIFI_SERVICE);
-            if (wm == null) return false;
-            WifiInfo wi = wm.getConnectionInfo();
-            int ipInt = wi.getIpAddress();
-            if (ipInt == 0) return false;
-            final String prefix = String.format(Locale.US, "%d.%d.%d.",
-                    (ipInt & 0xff), ((ipInt >> 8) & 0xff), ((ipInt >> 16) & 0xff));
-            final int port = store.getTlsPort();
-            ExecutorService pool = Executors.newFixedThreadPool(16);
-            List<Callable<String>> tasks = new ArrayList<>();
+            CompletionService<String> ecs = new ExecutorCompletionService<>(pool);
+            List<Future<String>> futures = new ArrayList<>(254);
             for (int i = 1; i <= 254; i++) {
                 final String candidate = prefix + i;
-                tasks.add(() -> {
+                futures.add(ecs.submit(() -> {
                     try {
-                        String json = requestJson("GET", candidate, port, "/deck/probe", pinnedFp, 180, null);
+                        String json = requestJson("GET", candidate, port, "/deck/probe", pinnedFp, 180, 220, null);
                         JSONObject o = new JSONObject(json);
-                        if (pinnedFp.equalsIgnoreCase(o.optString("certFingerprint", ""))) {
+                        String respFp = PairingUriParser.normalizeFingerprint(o.optString("certFingerprint", ""));
+                        if (pinnedFp.equals(respFp)) {
                             return candidate;
                         }
                     } catch (Exception ignored) { }
                     return null;
-                });
+                }));
             }
-            List<Future<String>> results = pool.invokeAll(tasks);
-            pool.shutdownNow();
-            for (Future<String> f : results) {
-                String found = f.get();
+            for (int i = 0; i < 254; i++) {
+                Future<String> completed = ecs.take();
+                String found = completed.get();
                 if (found != null && !found.isEmpty()) {
                     store.updatePcIp(found);
                     return true;
                 }
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        } finally {
+            pool.shutdownNow();
+        }
         return false;
     }
 
@@ -278,15 +389,16 @@ public final class PinnedDeckClient {
         String sep = pathPrefix.contains("?") ? "&" : "?";
         String tokEnc = URLEncoder.encode(store.getToken(), "UTF-8");
         String query = pathPrefix + sep + "token=" + tokEnc;
+        String pinnedFp = PairingUriParser.normalizeFingerprint(store.getCertFingerprint());
         try {
             return requestJson(method, store.getPcIp(), store.getTlsPort(), query,
-                    store.getCertFingerprint(), 1600, null);
+                    pinnedFp, 1600, 2000, null);
         } catch (SecurityException se) {
             throw se;
         } catch (Exception netEx) {
             if (rediscoverPcIp()) {
                 return requestJson(method, store.getPcIp(), store.getTlsPort(), query,
-                        store.getCertFingerprint(), 1600, null);
+                        pinnedFp, 1600, 2000, null);
             }
             throw netEx;
         }
@@ -310,6 +422,16 @@ public final class PinnedDeckClient {
         st.volume = o.optInt("volume", 50);
         st.muted = o.optBoolean("muted", false);
 
+        JSONObject th = o.optJSONObject("theme");
+        if (th != null) {
+            st.themeName = th.optString("name", "LiquidGlass");
+            st.themeIsLight = th.optBoolean("isLight", false);
+            st.themeIsGlass = th.optBoolean("isGlass", true);
+            st.themeBlurRadius = th.optInt("blurRadius", 20);
+            st.themeAccentHex = th.optString("accentHex", "#2BE4EA");
+            st.themeSurfaceHex = th.optString("surfaceHex", "#101216");
+        }
+
         JSONObject m = o.optJSONObject("media");
         if (m != null) {
             st.hasMedia = m.optBoolean("hasSession", false);
@@ -320,6 +442,8 @@ public final class PinnedDeckClient {
             st.posSec = m.optInt("posSec", 0);
             st.durSec = m.optInt("durSec", 0);
             st.accentHex = m.optString("accentHex", "#2BE4EA");
+            st.albumArtB64 = m.optString("albumArtB64", "");
+            st.audioLevel = m.optInt("audioLevel", 0);
         }
 
         JSONArray arr = o.optJSONArray("apps");
@@ -331,10 +455,105 @@ public final class PinnedDeckClient {
                 slot.label = item.optString("label", "Slot " + (i + 1));
                 slot.target = item.optString("target", "");
                 slot.configured = item.optBoolean("configured", false);
+                slot.iconB64 = item.optString("iconB64", "");
                 st.apps.add(slot);
             }
         }
+
+        JSONArray shelfArr = o.optJSONArray("shelf");
+        if (shelfArr != null) {
+            for (int i = 0; i < shelfArr.length(); i++) {
+                JSONObject item = shelfArr.getJSONObject(i);
+                ShelfItem sf = new ShelfItem();
+                sf.index = item.optInt("index", i);
+                sf.name = item.optString("name", "file");
+                sf.ext = item.optString("ext", "");
+                sf.sizeBytes = item.optLong("sizeBytes", 0L);
+                sf.isImage = item.optBoolean("isImage", false);
+                sf.thumbB64 = item.optString("thumbB64", "");
+                st.shelf.add(sf);
+            }
+        }
+
+        JSONArray clipArr = o.optJSONArray("clipboard");
+        if (clipArr != null) {
+            for (int i = 0; i < clipArr.length(); i++) {
+                JSONObject item = clipArr.getJSONObject(i);
+                ClipItem ci = new ClipItem();
+                ci.index = item.optInt("index", i);
+                ci.text = item.optString("text", "");
+                ci.pinned = item.optBoolean("pinned", false);
+                st.clipboard.add(ci);
+            }
+        }
+
+        JSONArray todoArr = o.optJSONArray("todos");
+        if (todoArr != null) {
+            for (int i = 0; i < todoArr.length(); i++) {
+                JSONObject item = todoArr.getJSONObject(i);
+                TodoItem ti = new TodoItem();
+                ti.index = item.optInt("index", i);
+                ti.text = item.optString("text", "");
+                ti.done = item.optBoolean("done", false);
+                st.todos.add(ti);
+            }
+        }
         return st;
+    }
+
+    public List<DeviceInfo> fetchDevices() throws Exception {
+        String json = authedCall("GET", "/deck/devices");
+        JSONObject o = new JSONObject(json);
+        List<DeviceInfo> list = new ArrayList<>();
+        JSONArray arr = o.optJSONArray("devices");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject item = arr.getJSONObject(i);
+                DeviceInfo d = new DeviceInfo();
+                d.deviceId = item.optString("deviceId", "");
+                d.deviceName = item.optString("deviceName", "");
+                d.model = item.optString("model", "");
+                d.osVersion = item.optString("osVersion", "");
+                d.appVersion = item.optString("appVersion", "");
+                d.ipAddress = item.optString("ipAddress", "");
+                d.keyFingerprint = item.optString("keyFingerprint", "");
+                d.pairedAtMs = item.optLong("pairedAtMs", 0L);
+                d.isCurrent = item.optBoolean("isCurrent", false);
+                list.add(d);
+            }
+        }
+        return list;
+    }
+
+    public boolean unpairWithPc() {
+        if (!store.isPaired()) return false;
+        try {
+            String tokEnc = URLEncoder.encode(store.getToken(), "UTF-8");
+            String query = "/deck/unpair?token=" + tokEnc;
+            String fp = PairingUriParser.normalizeFingerprint(store.getCertFingerprint());
+            String resp = requestJson("POST", store.getPcIp(), store.getTlsPort(), query, fp, 1200, 1500, null);
+            JSONObject obj = new JSONObject(resp);
+            return obj.optBoolean("unpaired", false);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public void sendPadUdp(String pipePayload) {
+        if (!store.isPaired()) return;
+        String ip = store.getPcIp();
+        String tok = store.getToken();
+        if (ip == null || ip.isEmpty() || tok == null || tok.isEmpty()) return;
+        try {
+            byte[] data = ("PAD|" + tok + "|" + pipePayload).getBytes(StandardCharsets.UTF_8);
+            InetAddress addr = InetAddress.getByName(ip);
+            synchronized (udpLock) {
+                if (padUdpSocket == null || padUdpSocket.isClosed()) {
+                    padUdpSocket = new DatagramSocket();
+                }
+                padUdpSocket.send(new DatagramPacket(data, data.length, addr, 47826));
+            }
+        } catch (Exception ignored) { }
     }
 
     public void sendPadAction(String actionQuery) throws Exception {
@@ -357,6 +576,70 @@ public final class PinnedDeckClient {
 
     public void sendModeAction(String action) throws Exception {
         authedCall("POST", "/deck/mode?a=" + URLEncoder.encode(action, "UTF-8"));
+    }
+
+    public boolean sendWakeUdp() {
+        if (!store.isPaired()) return false;
+        String ip = store.getPcIp();
+        String tok = store.getToken();
+        if (ip == null || ip.isEmpty() || tok == null || tok.isEmpty()) return false;
+        try {
+            byte[] data = ("WAKE|" + tok).getBytes(StandardCharsets.UTF_8);
+            InetAddress addr = InetAddress.getByName(ip);
+            synchronized (udpLock) {
+                if (padUdpSocket == null || padUdpSocket.isClosed()) {
+                    padUdpSocket = new DatagramSocket();
+                }
+                for (int i = 0; i < 3; i++) {
+                    padUdpSocket.send(new DatagramPacket(data, data.length, addr, 47826));
+                }
+            }
+            return true;
+        } catch (Exception ignored) { return false; }
+    }
+
+    public void sendClipboardToPc(String text) throws Exception {
+        authedCall("POST", "/deck/clipboard?text=" + URLEncoder.encode(text == null ? "" : text, "UTF-8"));
+    }
+
+    public void toggleTodo(int index) throws Exception {
+        authedCall("POST", "/deck/todo?a=toggle&idx=" + index);
+    }
+
+    public void addTodo(String text) throws Exception {
+        authedCall("POST", "/deck/todo?a=add&text=" + URLEncoder.encode(text == null ? "" : text, "UTF-8"));
+    }
+
+    public void testAudio() throws Exception {
+        authedCall("POST", "/deck/media?a=test_audio");
+    }
+
+    public byte[] downloadShelfFile(int index) throws Exception {
+        if (!store.isPaired()) throw new IllegalStateException("Not paired");
+        String ip = store.getPcIp();
+        int port = store.getTlsPort();
+        String fp = PairingUriParser.normalizeFingerprint(store.getCertFingerprint());
+        String tok = URLEncoder.encode(store.getToken(), "UTF-8");
+        URL url = new URL("https://" + ip + ":" + port + "/deck/shelf/file?idx=" + index + "&token=" + tok);
+        HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
+        conn.setSSLSocketFactory(getOrBuildPinnedSocketFactory(fp, null));
+        conn.setHostnameVerifier(LAN_HOST_VERIFIER);
+        conn.setConnectTimeout(3500);
+        conn.setReadTimeout(12000);
+        conn.setRequestMethod("GET");
+        conn.setDoInput(true);
+        int code = conn.getResponseCode();
+        if (code < 200 || code >= 300) {
+            conn.disconnect();
+            throw new IllegalStateException("HTTP " + code);
+        }
+        InputStream is = conn.getInputStream();
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int r;
+        while ((r = is.read(buf)) > 0) bos.write(buf, 0, r);
+        conn.disconnect();
+        return bos.toByteArray();
     }
 
     public void sendPowerAction(String action) throws Exception {

@@ -5,6 +5,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using OpenPixel.Core;
 
@@ -16,6 +17,7 @@ namespace OpenPixel.Rendering
         public RectangleF Rect { get; init; }
         public Action OnClick { get; init; }
         public Action<float> OnDrag { get; init; }
+        public bool VerticalDrag { get; init; }
     }
 
     // ========================================================================
@@ -45,7 +47,16 @@ namespace OpenPixel.Rendering
         private int _cachedGlassH = 0;
         private float _cachedBlurRadius = -1.0f;
         private int[] _cachedBlurredPixels = Array.Empty<int>();
+        private int[] _capturePixels = Array.Empty<int>();
+        private int[] _refractedPixels = Array.Empty<int>();
+        private int[] _blurTempPixels = Array.Empty<int>();
         private Bitmap _cachedGlassBitmap;
+        private long _lastGlassCaptureTs = 0;
+
+        // Luma variance of the last blurred backdrop: 0 means a flat fill, so the
+        // self-test can prove the glass is sampling real screen content.
+        public double BackdropVariance { get; private set; }
+        public ulong BackdropOutputHash { get; private set; }
 
         private readonly List<HitRegion> _hitRegions = new();
         private string _activeDragId = "";
@@ -53,7 +64,7 @@ namespace OpenPixel.Rendering
         // Per-frame caches. Creating a GDI+ Font per string (and a brush/pen per
         // primitive) every frame is what made theme/scroll animations stutter:
         // dozens of fonts per frame cost more than the drawing itself.
-        private readonly Dictionary<(string Family, float Size, bool Bold), Font> _fontCache = new();
+        private readonly Dictionary<(bool Mono, float Size, bool Bold), Font> _fontCache = new();
         private readonly Dictionary<(StringAlignment H, StringAlignment V, bool NoWrap), StringFormat> _formatCache = new();
         private readonly SolidBrush _paintBrush = new(Color.White);
         private readonly Pen _paintPen = new(Color.White, 1.0f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
@@ -61,6 +72,14 @@ namespace OpenPixel.Rendering
 
         public float DpiScale => _dpiScale;
         public Graphics G => _g;
+        public float TextScaleMultiplier { get; set; } = 1.0f;
+        public float Opacity { get; set; } = 1.0f;
+
+        private Color ApplyOpacity(Color color)
+        {
+            float opacity = Math.Clamp(Opacity, 0.0f, 1.0f);
+            return opacity >= 0.999f ? color : Color.FromArgb((int)MathF.Round(color.A * opacity), color.R, color.G, color.B);
+        }
 
         public bool BeginLayeredFrame(int widthPx, int heightPx, float dpiScale)
         {
@@ -107,8 +126,32 @@ namespace OpenPixel.Rendering
                 _g.ScaleTransform(_dpiScale, _dpiScale);
                 _g.SmoothingMode = SmoothingMode.AntiAlias;
                 _g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                _g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+                // ClearType cannot blend against a per-pixel-alpha layered surface:
+                // its subpixel filter leaves coloured fringes. AntiAlias keeps the
+                // glyph edges whole-pixel and neutral.
+                _g.TextRenderingHint = TextRenderingHint.AntiAlias;
                 _g.InterpolationMode = InterpolationMode.Bilinear;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Copies the current layered surface to a PNG (test/preview hook).
+        public bool SaveSurfacePng(string path)
+        {
+            try
+            {
+                if (_managedSurface == null || _surfaceW <= 0 || _surfaceH <= 0) return false;
+                using var copy = new Bitmap(_surfaceW, _surfaceH, PixelFormat.Format32bppPArgb);
+                using (var g = Graphics.FromImage(copy))
+                {
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    g.DrawImageUnscaled(_managedSurface, 0, 0);
+                }
+                copy.Save(path, ImageFormat.Png);
                 return true;
             }
             catch
@@ -201,13 +244,33 @@ namespace OpenPixel.Rendering
         public GraphicsPath CreateBottomTaskbarNotchPath(
             float left, float top, float width, float height, float cornerRadius)
         {
+            left   = SpringPresets.SnapDipToWholePixel(left, _dpiScale);
+            top    = SpringPresets.SnapDipToWholePixel(top, _dpiScale);
+            width  = Math.Max(16.0f, SpringPresets.SnapDipToWholePixel(width, _dpiScale));
+            height = Math.Max(12.0f, SpringPresets.SnapDipToWholePixel(height, _dpiScale));
+
             var path = new GraphicsPath();
-            float r = Math.Clamp(cornerRadius, 4.0f, Math.Min(width * 0.5f, height * 0.5f));
+            float r = Math.Clamp(cornerRadius, 4.0f, Math.Min(width * 0.4f, height * 0.65f));
             float d = r * 2.0f;
-            path.AddArc(left, top, d, d, 180, 90);
-            path.AddArc(left + width - d, top, d, d, 270, 90);
-            path.AddLine(left + width, top + r, left + width, top + height);
-            path.AddLine(left + width, top + height, left, top + height);
+            float flare = Math.Min(8.0f, left);
+            float bottom = top + height;
+            float right = left + width;
+
+            if (flare >= 2.0f)
+            {
+                float fd = flare * 2.0f;
+                path.AddArc(left - fd, bottom - fd, fd, fd, 90, -90);
+                path.AddArc(left, top, d, d, 180, 90);
+                path.AddArc(right - d, top, d, d, 270, 90);
+                path.AddArc(right, bottom - fd, fd, fd, 180, -90);
+            }
+            else
+            {
+                path.AddArc(left, top, d, d, 180, 90);
+                path.AddArc(right - d, top, d, d, 270, 90);
+                path.AddLine(right, top + r, right, bottom);
+                path.AddLine(right, bottom, left, bottom);
+            }
             path.CloseFigure();
             return path;
         }
@@ -237,8 +300,8 @@ namespace OpenPixel.Rendering
             {
                 // Clamp blur radius strictly to [0.0f, 40.0f]
                 float safeBlur = Math.Clamp(blurRadiusPx, 0.0f, 40.0f);
-                int capW = Math.Clamp(screenRect.Width / 2, 16, 420);
-                int capH = Math.Clamp(screenRect.Height / 2, 12, 320);
+                int capW = Math.Clamp(screenRect.Width / 2, 16, 240);
+                int capH = Math.Clamp(screenRect.Height / 2, 12, 160);
 
                 IntPtr screenDc = Win32Layered.GetDC(IntPtr.Zero);
                 if (screenDc == IntPtr.Zero) return false;
@@ -278,7 +341,8 @@ namespace OpenPixel.Rendering
                 }
 
                 int totalPixels = capW * capH;
-                int[] srcPixels = new int[totalPixels];
+                if (_capturePixels.Length != totalPixels) _capturePixels = new int[totalPixels];
+                int[] srcPixels = _capturePixels;
                 Marshal.Copy(rawBits, srcPixels, 0, totalPixels);
                 Win32Layered.DeleteObject(capBmp);
 
@@ -310,46 +374,148 @@ namespace OpenPixel.Rendering
                         _cachedBlurredPixels = new int[totalPixels];
                     }
 
-                    int[] refracted = new int[totalPixels];
+                    if (_refractedPixels.Length != totalPixels) _refractedPixels = new int[totalPixels];
+                    int[] refracted = _refractedPixels;
                     float cx = capW * 0.5f;
                     float cy = capH * 0.5f;
                     float invRx = 1.0f / Math.Max(1.0f, cx);
                     float invRy = 1.0f / Math.Max(1.0f, cy);
 
-                    // Pass 1: Cubic Edge Lens Refraction + 165% Saturation Boost
+                    // Pass 1: Exact port of Kyant0/AndroidLiquidGlass Shaders.kt:
+                    // sdRoundedRect + gradSdRoundedRect (gradRadius = min(r*1.5, min(hw, hh)))
+                    // + circleMap lens refraction + 7-tap spectral chromatic dispersion
+                    // + subtle 45-degree directional highlight (ZERO milky white side fade).
+                    float halfW = capW * 0.5f;
+                    float halfH = capH * 0.5f;
+                    float cornerR = MathF.Min(halfW, halfH) * 0.42f;
+                    float gradRadius = MathF.Min(cornerR * 1.5f, MathF.Min(halfW, halfH));
+                    float refractionHeight = MathF.Max(6.0f, MathF.Min(capW, capH) * 0.24f);
+                    float refractionAmount = -MathF.Max(8.0f, MathF.Min(capW, capH) * 0.16f); // negated as in Lens.kt
+                    float invHalfArea = 1.0f / MathF.Max(1.0f, halfW * halfH);
+                    const float cos45 = 0.70710678f;
+                    const float sin45 = 0.70710678f;
+
+                    static float SdRoundedRect(float cxp, float cyp, float hw, float hh, float r)
+                    {
+                        float qx = MathF.Abs(cxp) - (hw - r);
+                        float qy = MathF.Abs(cyp) - (hh - r);
+                        float ox = MathF.Max(qx, 0.0f);
+                        float oy = MathF.Max(qy, 0.0f);
+                        float outside = MathF.Sqrt(ox * ox + oy * oy) - r;
+                        float inside = MathF.Min(MathF.Max(qx, qy), 0.0f);
+                        return outside + inside;
+                    }
+
+                    static (float gx, float gy) GradSdRoundedRect(float cxp, float cyp, float hw, float hh, float r)
+                    {
+                        float sx = cxp < 0.0f ? -1.0f : 1.0f;
+                        float sy = cyp < 0.0f ? -1.0f : 1.0f;
+                        float qx = MathF.Abs(cxp) - (hw - r);
+                        float qy = MathF.Abs(cyp) - (hh - r);
+                        if (qx >= 0.0f || qy >= 0.0f)
+                        {
+                            float mx = MathF.Max(qx, 0.0f);
+                            float my = MathF.Max(qy, 0.0f);
+                            float len = MathF.Sqrt(mx * mx + my * my);
+                            if (len < 1e-4f) return (sx, 0.0f);
+                            return (sx * (mx / len), sy * (my / len));
+                        }
+                        return qx >= qy ? (sx, 0.0f) : (0.0f, sy);
+                    }
+
+                    static (float r, float g, float b) SampleBilinear(int[] buf, int w, int h, float fx, float fy)
+                    {
+                        float cxp = Math.Clamp(fx, 0.0f, w - 1.001f);
+                        float cyp = Math.Clamp(fy, 0.0f, h - 1.001f);
+                        int x0 = (int)cxp, y0 = (int)cyp;
+                        int x1 = Math.Min(x0 + 1, w - 1), y1 = Math.Min(y0 + 1, h - 1);
+                        float tx = cxp - x0, ty = cyp - y0;
+                        uint p00 = (uint)buf[y0 * w + x0];
+                        uint p10 = (uint)buf[y0 * w + x1];
+                        uint p01 = (uint)buf[y1 * w + x0];
+                        uint p11 = (uint)buf[y1 * w + x1];
+                        float w00 = (1f - tx) * (1f - ty), w10 = tx * (1f - ty), w01 = (1f - tx) * ty, w11 = tx * ty;
+                        float r = (((p00 >> 16) & 0xFF) * w00 + ((p10 >> 16) & 0xFF) * w10 + ((p01 >> 16) & 0xFF) * w01 + ((p11 >> 16) & 0xFF) * w11) / 255f;
+                        float g = (((p00 >> 8) & 0xFF) * w00 + ((p10 >> 8) & 0xFF) * w10 + ((p01 >> 8) & 0xFF) * w01 + ((p11 >> 8) & 0xFF) * w11) / 255f;
+                        float b = ((p00 & 0xFF) * w00 + (p10 & 0xFF) * w10 + (p01 & 0xFF) * w01 + (p11 & 0xFF) * w11) / 255f;
+                        return (r, g, b);
+                    }
+
                     for (int y = 0; y < capH; ++y)
                     {
-                        float ny = (y - cy) * invRy;
+                        float py = (y + 0.5f) - halfH;
                         for (int x = 0; x < capW; ++x)
                         {
-                            float nx = (x - cx) * invRx;
-                            float dist2 = nx * nx + ny * ny;
-                            float bend = (dist2 > 0.45f) ? ((dist2 - 0.45f) * 0.34f) : 0.0f;
-                            int sx = Math.Clamp((int)(x - nx * bend * capW * 0.18f), 0, capW - 1);
-                            int sy = Math.Clamp((int)(y - ny * bend * capH * 0.22f), 0, capH - 1);
+                            float pxCoord = (x + 0.5f) - halfW;
+                            float sd = SdRoundedRect(pxCoord, py, halfW, halfH, cornerR);
 
-                            uint px = (uint)srcPixels[sy * capW + sx];
-                            float b = (px & 0xFF) / 255.0f;
-                            float g = ((px >> 8) & 0xFF) / 255.0f;
-                            float r = ((px >> 16) & 0xFF) / 255.0f;
+                            float r, g, b;
+                            if (-sd >= refractionHeight)
+                            {
+                                uint p = (uint)srcPixels[y * capW + x];
+                                r = ((p >> 16) & 0xFF) / 255.0f;
+                                g = ((p >> 8) & 0xFF) / 255.0f;
+                                b = (p & 0xFF) / 255.0f;
+                            }
+                            else
+                            {
+                                float clampedSd = MathF.Min(sd, 0.0f);
+                                float normIn = Math.Clamp(1.0f - (-clampedSd / refractionHeight), 0.0f, 1.0f);
+                                // Kyant0 circleMap(x) = 1.0 - sqrt(1.0 - x*x)
+                                float d = (1.0f - MathF.Sqrt(MathF.Max(0.0f, 1.0f - normIn * normIn))) * refractionAmount;
+                                var (gx, gy) = GradSdRoundedRect(pxCoord, py, halfW, halfH, gradRadius);
+                                float refX = x + d * gx;
+                                float refY = y + d * gy;
 
+                                // Kyant0 7-tap spectral chromatic dispersion (curves at corners, zero side haze)
+                                float dispInt = (pxCoord * py) * invHalfArea;
+                                float dxD = d * gx * dispInt;
+                                float dyD = d * gy * dispInt;
+                                if (MathF.Abs(dxD) + MathF.Abs(dyD) > 0.12f)
+                                {
+                                    var cRed    = SampleBilinear(srcPixels, capW, capH, refX + dxD,             refY + dyD);
+                                    var cOrange = SampleBilinear(srcPixels, capW, capH, refX + dxD * (2f/3f),   refY + dyD * (2f/3f));
+                                    var cYellow = SampleBilinear(srcPixels, capW, capH, refX + dxD * (1f/3f),   refY + dyD * (1f/3f));
+                                    var cGreen  = SampleBilinear(srcPixels, capW, capH, refX,                   refY);
+                                    var cCyan   = SampleBilinear(srcPixels, capW, capH, refX - dxD * (1f/3f),   refY - dyD * (1f/3f));
+                                    var cBlue   = SampleBilinear(srcPixels, capW, capH, refX - dxD * (2f/3f),   refY - dyD * (2f/3f));
+                                    var cPurple = SampleBilinear(srcPixels, capW, capH, refX - dxD,             refY - dyD);
+                                    r = (cRed.r + cOrange.r + cYellow.r) / 3.5f + cPurple.r / 7.0f;
+                                    g = cOrange.g / 7.0f + (cYellow.g + cGreen.g + cCyan.g) / 3.5f;
+                                    b = (cCyan.b + cBlue.b + cPurple.b) / 3.0f;
+                                }
+                                else
+                                {
+                                    (r, g, b) = SampleBilinear(srcPixels, capW, capH, refX, refY);
+                                }
+                            }
+
+                            // Subtle vibrancy boost matching real optical glass
                             float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-                            r = Math.Clamp(luma + (r - luma) * 1.65f, 0.0f, 1.0f);
-                            g = Math.Clamp(luma + (g - luma) * 1.65f, 0.0f, 1.0f);
-                            b = Math.Clamp(luma + (b - luma) * 1.65f, 0.0f, 1.0f);
+                            r = Math.Clamp(luma + (r - luma) * 1.32f, 0.0f, 1.0f);
+                            g = Math.Clamp(luma + (g - luma) * 1.32f, 0.0f, 1.0f);
+                            b = Math.Clamp(luma + (b - luma) * 1.32f, 0.0f, 1.0f);
 
                             if (isCandyGlass)
                             {
                                 float grad = (float)x / Math.Max(1, capW);
-                                r = r * 0.48f + (0.36f * (1.0f - grad) + 0.20f * grad);
-                                g = g * 0.48f + (0.14f * (1.0f - grad) + 0.24f * grad);
-                                b = b * 0.48f + (0.34f * (1.0f - grad) + 0.42f * grad);
+                                r = r * 0.62f + (0.28f * (1.0f - grad) + 0.16f * grad);
+                                g = g * 0.62f + (0.12f * (1.0f - grad) + 0.22f * grad);
+                                b = b * 0.62f + (0.26f * (1.0f - grad) + 0.34f * grad);
                             }
                             else
                             {
-                                r = r * 0.52f + 0.04f;
-                                g = g * 0.52f + 0.05f;
-                                b = b * 0.54f + 0.08f;
+                                // Clean dark-smoked glass readability tint + delicate 1.5px 45-deg edge specular ONLY
+                                float edgeRim = (-sd < 1.8f) ? (1.0f - Math.Clamp(-sd / 1.8f, 0.0f, 1.0f)) : 0.0f;
+                                float spec = 0.0f;
+                                if (edgeRim > 0.01f)
+                                {
+                                    var (hx, hy) = GradSdRoundedRect(pxCoord, py, halfW, halfH, gradRadius);
+                                    spec = MathF.Abs(hx * cos45 + hy * sin45) * edgeRim * 0.16f;
+                                }
+                                r = Math.Clamp(r * 0.68f + 0.03f + spec, 0.0f, 1.0f);
+                                g = Math.Clamp(g * 0.68f + 0.032f + spec, 0.0f, 1.0f);
+                                b = Math.Clamp(b * 0.70f + 0.042f + spec, 0.0f, 1.0f);
                             }
 
                             int rb = Math.Clamp((int)(r * 255.0f), 0, 255);
@@ -359,19 +525,18 @@ namespace OpenPixel.Rendering
                         }
                     }
 
-                    // Pass 2: Separable Gaussian/Box Blur (strictly guarded for kernel radius >= 1)
-                    int kernelRadius = Math.Clamp((int)MathF.Round(safeBlur * 0.35f), 0, 14);
+                    // Pass 2: 3-pass Separable Sliding-Window Gaussian Blur (true frosted glass)
+                    int kernelRadius = Math.Clamp((int)MathF.Round(safeBlur * 0.55f), 0, 22);
                     if (kernelRadius <= 0)
                     {
                         Array.Copy(refracted, _cachedBlurredPixels, totalPixels);
                     }
                     else
                     {
-                        // Sliding-window box blur: O(pixels) instead of O(pixels x radius),
-                        // so dragging the blur slider cannot stall the UI thread.
-                        int[] temp = new int[totalPixels];
+                        if (_blurTempPixels.Length != totalPixels) _blurTempPixels = new int[totalPixels];
+                        int[] temp = _blurTempPixels;
                         int[] source = refracted;
-                        for (int iter = 0; iter < 2; ++iter)
+                        for (int iter = 0; iter < 3; ++iter)
                         {
                             BoxBlurHorizontal(source, temp, capW, capH, kernelRadius);
                             BoxBlurVertical(temp, _cachedBlurredPixels, capW, capH, kernelRadius);
@@ -389,11 +554,38 @@ namespace OpenPixel.Rendering
                         new Rectangle(0, 0, capW, capH), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
                     Marshal.Copy(_cachedBlurredPixels, 0, bd.Scan0, totalPixels);
                     _cachedGlassBitmap.UnlockBits(bd);
+
+                    double lumaSum = 0, lumaSqSum = 0;
+                    int samples = 0;
+                    for (int i = 0; i < totalPixels; i += 17)
+                    {
+                        uint px = (uint)_cachedBlurredPixels[i];
+                        double luma = 0.2126 * ((px >> 16) & 0xFF) + 0.7152 * ((px >> 8) & 0xFF) + 0.0722 * (px & 0xFF);
+                        lumaSum += luma;
+                        lumaSqSum += luma * luma;
+                        ++samples;
+                    }
+                    if (samples > 0)
+                    {
+                        double mean = lumaSum / samples;
+                        BackdropVariance = Math.Max(0.0, lumaSqSum / samples - mean * mean);
+                    }
+
+                    ulong outHash = 14695981039346656037UL;
+                    for (int i = 0; i < totalPixels; i += 13)
+                    {
+                        outHash ^= (uint)_cachedBlurredPixels[i];
+                        outHash *= 1099511628211UL;
+                    }
+                    BackdropOutputHash = outHash;
                 }
 
                 if (_cachedGlassBitmap != null)
                 {
+                    var prevInterp = _g.InterpolationMode;
+                    _g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                     _g.DrawImage(_cachedGlassBitmap, new RectangleF(dipX, dipY, dipW, dipH));
+                    _g.InterpolationMode = prevInterp;
                     return true;
                 }
             }
@@ -469,15 +661,173 @@ namespace OpenPixel.Rendering
             }
         }
 
-        public void RenderAlbumBackdrop(MediaSessionState media, float left, float top, float width, float height)
+        // No session, no backdrop: the guard sits on the entry point so no caller
+        // can paint an album gradient from empty media state.
+        // The hero demo's music backdrop (IslandRenderer.Music.cs): the cover squeezed
+        // Cached dominant + secondary vibrant colors extracted from the active album art.
+        private Image _albumColorSource;
+        private Color _albumDomColor = Color.FromArgb(255, 34, 62, 92);
+        private Color _albumSecColor = Color.FromArgb(255, 14, 18, 26);
+
+        private static (Color Dom, Color Sec) ExtractDominantVibrantColor(Image img, Color fallbackDom, Color fallbackSec)
         {
-            if (_g == null || !media.HasSession || width <= 2 || height <= 2) return;
-            using var brush = new LinearGradientBrush(
-                new PointF(left, top),
-                new PointF(left + width, top + height),
-                Color.FromArgb(195, media.DominantColor.R / 2, media.DominantColor.G / 2, media.DominantColor.B / 2),
-                Color.FromArgb(220, 11, 11, 12));
-            _g.FillRectangle(brush, left, top, width, height);
+            if (img == null) return (fallbackDom, fallbackSec);
+            try
+            {
+                using var thumb = new Bitmap(24, 24);
+                using (var sg = Graphics.FromImage(thumb))
+                {
+                    sg.InterpolationMode = InterpolationMode.Bilinear;
+                    sg.DrawImage(img, 0, 0, 24, 24);
+                }
+
+                // 12-hue-bucket weighted vote favoring saturated, mid-luminance pixels
+                double[] rSum = new double[12], gSum = new double[12], bSum = new double[12], wSum = new double[12];
+                double allR = 0, allG = 0, allB = 0, allW = 0;
+
+                for (int y = 2; y < 22; y++)
+                {
+                    for (int x = 2; x < 22; x++)
+                    {
+                        Color c = thumb.GetPixel(x, y);
+                        float rf = c.R / 255f, gf = c.G / 255f, bf = c.B / 255f;
+                        float max = MathF.Max(rf, MathF.Max(gf, bf));
+                        float min = MathF.Min(rf, MathF.Min(gf, bf));
+                        float delta = max - min;
+                        float lum = (max + min) * 0.5f;
+                        float sat = delta < 0.001f ? 0f : delta / (1f - MathF.Abs(2f * lum - 1f));
+
+                        double baseW = 0.25 + sat * sat * 3.0;
+                        if (lum < 0.10f || lum > 0.92f) baseW *= 0.25;
+                        allR += c.R * baseW; allG += c.G * baseW; allB += c.B * baseW; allW += baseW;
+
+                        if (sat > 0.14f && lum >= 0.12f && lum <= 0.88f)
+                        {
+                            float hue;
+                            if (max == rf) hue = ((gf - bf) / delta) % 6f;
+                            else if (max == gf) hue = (bf - rf) / delta + 2f;
+                            else hue = (rf - gf) / delta + 4f;
+                            hue *= 60f;
+                            if (hue < 0f) hue += 360f;
+                            int bucket = Math.Clamp((int)(hue / 30f), 0, 11);
+                            double w = sat * sat * (1.0 - Math.Abs(lum - 0.5) * 0.7);
+                            rSum[bucket] += c.R * w;
+                            gSum[bucket] += c.G * w;
+                            bSum[bucket] += c.B * w;
+                            wSum[bucket] += w;
+                        }
+                    }
+                }
+
+                int best = -1;
+                double bestW = 0;
+                for (int i = 0; i < 12; i++)
+                {
+                    if (wSum[i] > bestW) { bestW = wSum[i]; best = i; }
+                }
+
+                Color dom;
+                if (best >= 0 && bestW > 0.05)
+                {
+                    dom = Color.FromArgb(255,
+                        Math.Clamp((int)(rSum[best] / bestW), 0, 255),
+                        Math.Clamp((int)(gSum[best] / bestW), 0, 255),
+                        Math.Clamp((int)(bSum[best] / bestW), 0, 255));
+                }
+                else if (allW > 0.01)
+                {
+                    dom = Color.FromArgb(255,
+                        Math.Clamp((int)(allR / allW), 0, 255),
+                        Math.Clamp((int)(allG / allW), 0, 255),
+                        Math.Clamp((int)(allB / allW), 0, 255));
+                }
+                else
+                {
+                    dom = fallbackDom;
+                }
+
+                // Deepened companion shade so the wash melts smoothly into the obsidian card
+                Color sec = Color.FromArgb(255,
+                    Math.Clamp((int)(dom.R * 0.24f) + 6, 8, 64),
+                    Math.Clamp((int)(dom.G * 0.24f) + 6, 8, 64),
+                    Math.Clamp((int)(dom.B * 0.24f) + 8, 10, 72));
+                return (dom, sec);
+            }
+            catch
+            {
+                return (fallbackDom, fallbackSec);
+            }
+        }
+
+        public void RenderAlbumBackdrop(
+            MediaSessionState media, float left, float top, float width, float height, float bgK = 1.0f)
+        {
+            if (_g == null || media == null || !media.HasSession) return;
+            float a = Math.Clamp(bgK, 0.0f, 1.0f);
+            if (a <= 0.003f || width <= 2 || height <= 2) return;
+
+            if (media.AlbumArt != null)
+            {
+                if (!ReferenceEquals(_albumColorSource, media.AlbumArt))
+                {
+                    var (d, s) = ExtractDominantVibrantColor(media.AlbumArt, media.DominantColor, media.SecondaryColor);
+                    _albumDomColor = d;
+                    _albumSecColor = s;
+                    _albumColorSource = media.AlbumArt;
+                }
+            }
+            else
+            {
+                _albumColorSource = null;
+                _albumDomColor = media.DominantColor;
+                _albumSecColor = media.SecondaryColor;
+            }
+
+            // Smooth dominant-color ambient wash (no stretched artwork image)
+            Color dom = _albumDomColor;
+            Color sec = _albumSecColor;
+            var washRect = new RectangleF(left - 12, top - 8, width + 24, height + 16);
+            using (var wash = new LinearGradientBrush(
+                washRect,
+                Color.FromArgb((int)(195 * a), dom.R, dom.G, dom.B),
+                Color.FromArgb((int)(215 * a), sec.R, sec.G, sec.B),
+                22.0f))
+            {
+                var blend = new ColorBlend(3)
+                {
+                    Colors = new[]
+                    {
+                        Color.FromArgb((int)(195 * a), dom.R, dom.G, dom.B),
+                        Color.FromArgb((int)(155 * a), (dom.R + sec.R) / 2, (dom.G + sec.G) / 2, (dom.B + sec.B) / 2),
+                        Color.FromArgb((int)(225 * a), 11, 11, 13)
+                    },
+                    Positions = new[] { 0.0f, 0.52f, 1.0f }
+                };
+                wash.InterpolationColors = blend;
+                _g.FillRectangle(wash, washRect);
+            }
+
+            // Balanced dark scrims so the whole card stays richly colored while text stays crisp
+            using (var across = new LinearGradientBrush(
+                new RectangleF(left - 12, top - 6, width + 24, height + 6), Color.Black, Color.Black, 0f))
+            {
+                across.InterpolationColors = new ColorBlend
+                {
+                    Colors = new[] { Color.FromArgb((int)(135 * a), 0, 0, 0), Color.FromArgb((int)(68 * a), 0, 0, 0), Color.FromArgb((int)(110 * a), 0, 0, 0) },
+                    Positions = new[] { 0f, 0.45f, 1f }
+                };
+                _g.FillRectangle(across, left - 12, top - 6, width + 24, height + 6);
+            }
+            using (var up = new LinearGradientBrush(
+                new RectangleF(left - 12, top + height * 0.55f, width + 24, height * 0.45f + 6), Color.Black, Color.Black, 90f))
+            {
+                up.InterpolationColors = new ColorBlend
+                {
+                    Colors = new[] { Color.FromArgb(0, 0, 0, 0), Color.FromArgb((int)(132 * a), 0, 0, 0) },
+                    Positions = new[] { 0f, 1f }
+                };
+                _g.FillRectangle(up, left - 12, top + height * 0.55f, width + 24, height * 0.45f + 6);
+            }
         }
 
         // ====================================================================
@@ -487,7 +837,7 @@ namespace OpenPixel.Rendering
         {
             if (_g == null || r.Width <= 0.5f || r.Height <= 0.5f) return;
             GraphicsPath path = BuildRoundedRectPath(r, radius);
-            _paintBrush.Color = color;
+            _paintBrush.Color = ApplyOpacity(color);
             _g.FillPath(_paintBrush, path);
         }
 
@@ -495,7 +845,7 @@ namespace OpenPixel.Rendering
         {
             if (_g == null || r.Width <= 0.5f || r.Height <= 0.5f) return;
             GraphicsPath path = BuildRoundedRectPath(r, radius);
-            _paintPen.Color = color;
+            _paintPen.Color = ApplyOpacity(color);
             _paintPen.Width = strokeWidth;
             _g.DrawPath(_paintPen, path);
         }
@@ -524,14 +874,56 @@ namespace OpenPixel.Rendering
         public void FillCircle(float cx, float cy, float radius, Color color)
         {
             if (_g == null || radius <= 0.2f) return;
-            _paintBrush.Color = color;
+            _paintBrush.Color = ApplyOpacity(color);
             _g.FillEllipse(_paintBrush, cx - radius, cy - radius, radius * 2.0f, radius * 2.0f);
+        }
+
+        // Idle indicator: three dots that breathe and morph between circle,
+        // squircle and diamond, exactly the kind of motion the site's HUD uses.
+        public void DrawMorphingDots(float rightCenterX, float cy, float timeSec, Color color, int count = 3, float spacing = 6.4f)
+        {
+            if (_g == null || count <= 0) return;
+            float startX = rightCenterX - spacing * (count - 1);
+            for (int i = 0; i < count; ++i)
+            {
+                float phase = (timeSec * 0.9f + i * 0.33f) % 1.0f;
+                float breathe = 0.5f - 0.5f * MathF.Cos(phase * MathF.PI * 2.0f);
+                float shape = (timeSec * 0.55f + i * 0.21f) % 1.0f; // 0..1 morph cycle
+                float radius = 2.0f + breathe * 1.1f;
+                float x = startX + i * spacing;
+                float y = cy + MathF.Sin(phase * MathF.PI * 2.0f) * 1.2f;
+                int alpha = 120 + (int)(breathe * 110.0f);
+                Color dot = Color.FromArgb(Math.Clamp(alpha, 0, 255), color.R, color.G, color.B);
+
+                if (shape < 0.33f)
+                {
+                    FillCircle(x, y, radius, dot);
+                }
+                else if (shape < 0.66f)
+                {
+                    float roundness = 0.55f + 0.35f * breathe;
+                    FillRoundedRect(new RectangleF(x - radius, y - radius, radius * 2.0f, radius * 2.0f), radius * roundness, dot);
+                }
+                else
+                {
+                    // Diamond: square rotated through four points
+                    var p = new PointF[]
+                    {
+                        new PointF(x, y - radius * 1.05f),
+                        new PointF(x + radius * 1.05f, y),
+                        new PointF(x, y + radius * 1.05f),
+                        new PointF(x - radius * 1.05f, y)
+                    };
+                    _paintBrush.Color = ApplyOpacity(dot);
+                    _g.FillPolygon(_paintBrush, p);
+                }
+            }
         }
 
         public void DrawCircle(float cx, float cy, float radius, Color color, float strokeWidth = 1.5f)
         {
             if (_g == null || radius <= 0.2f) return;
-            _paintPen.Color = color;
+            _paintPen.Color = ApplyOpacity(color);
             _paintPen.Width = strokeWidth;
             _g.DrawEllipse(_paintPen, cx - radius, cy - radius, radius * 2.0f, radius * 2.0f);
         }
@@ -539,9 +931,13 @@ namespace OpenPixel.Rendering
         public void DrawLine(float x1, float y1, float x2, float y2, Color color, float strokeWidth = 1.5f)
         {
             if (_g == null) return;
-            _paintPen.Color = color;
+            _paintPen.Color = ApplyOpacity(color);
             _paintPen.Width = strokeWidth;
-            _g.DrawLine(_paintPen, x1, y1, x2, y2);
+            _g.DrawLine(_paintPen,
+                SpringPresets.SnapDipToWholePixel(x1, _dpiScale),
+                SpringPresets.SnapDipToWholePixel(y1, _dpiScale),
+                SpringPresets.SnapDipToWholePixel(x2, _dpiScale),
+                SpringPresets.SnapDipToWholePixel(y2, _dpiScale));
         }
 
         public void DrawTextStr(
@@ -550,12 +946,24 @@ namespace OpenPixel.Rendering
             StringAlignment vAlign = StringAlignment.Center, bool noWrap = true)
         {
             if (_g == null || string.IsNullOrEmpty(text) || rect.Width <= 1 || rect.Height <= 1) return;
+            rect = new RectangleF(
+                SpringPresets.SnapDipToWholePixel(rect.X, _dpiScale),
+                SpringPresets.SnapDipToWholePixel(rect.Y, _dpiScale),
+                Math.Max(2.0f, SpringPresets.SnapDipToWholePixel(rect.Width, _dpiScale)),
+                Math.Max(2.0f, SpringPresets.SnapDipToWholePixel(rect.Height, _dpiScale)));
             float scale = Math.Clamp(GlobalAppState.Instance.Settings.TextScale, 0.85f, 1.5f);
-            float sz = Math.Max(6.0f, fontSizeDip * scale * 0.78f);
+            // fontSizeDip is DIPs: at 96 DPI one DIP is one pixel, so convert through the
+            // surface's real DPI. Without this, text renders 25% larger on a 125% display
+            // and every label overflows the DIP box it was measured against.
+            float surfaceDpi = _g.DpiY > 1.0f ? _g.DpiY : 96.0f;
+            // Geist is drawn at exactly its DIP size (0.75 pt per DIP); Inter keeps the
+            // 0.78 bump that compensates for its smaller x-height.
+            float dipToPoints = UiFonts.IsGeist ? 0.75f : 0.78f;
+            float sz = Math.Max(6.0f, fontSizeDip * scale * Math.Clamp(TextScaleMultiplier, 0.65f, 2.1f) * dipToPoints * (96.0f / surfaceDpi));
 
-            string family = mono ? "Consolas" : "Segoe UI";
-            // Round to 0.1 pt so tiny float jitter cannot fill the cache with fonts.
-            var fontKey = (Family: family, Size: MathF.Round(sz * 10.0f) / 10.0f, Bold: bold);
+            // Inter everywhere (bundled inside the assembly), rounded to 0.1 pt so
+            // tiny float jitter cannot fill the cache with fonts.
+            var fontKey = (Mono: mono, Size: MathF.Round(sz * 10.0f) / 10.0f, Bold: bold);
             if (!_fontCache.TryGetValue(fontKey, out Font font))
             {
                 if (_fontCache.Count >= 96)
@@ -563,7 +971,7 @@ namespace OpenPixel.Rendering
                     foreach (Font cached in _fontCache.Values) cached.Dispose();
                     _fontCache.Clear();
                 }
-                font = new Font(fontKey.Family, fontKey.Size, bold ? FontStyle.Bold : FontStyle.Regular);
+                font = UiFonts.Get(fontKey.Size, bold, mono);
                 _fontCache[fontKey] = font;
             }
 
@@ -580,16 +988,87 @@ namespace OpenPixel.Rendering
                 _formatCache[formatKey] = sf;
             }
 
-            _paintBrush.Color = color;
+            _paintBrush.Color = ApplyOpacity(color);
             _g.DrawString(text, font, _paintBrush, rect, sf);
+        }
+
+        // Wide letter-spaced uppercase typography (day name, date, "- 11:30 AM -").
+        // Each glyph is placed individually because GDI+ has no tracking support.
+        public void DrawTrackedText(
+            string text, RectangleF rect, float fontSizeDip, bool bold, Color color,
+            float trackingDip, StringAlignment hAlign = StringAlignment.Center, bool mono = true)
+        {
+            if (_g == null || string.IsNullOrEmpty(text) || rect.Width <= 1 || rect.Height <= 1) return;
+            float scale = Math.Clamp(GlobalAppState.Instance.Settings.TextScale, 0.85f, 1.5f);
+            // fontSizeDip is DIPs: at 96 DPI one DIP is one pixel, so convert through the
+            // surface's real DPI. Without this, text renders 25% larger on a 125% display
+            // and every label overflows the DIP box it was measured against.
+            float surfaceDpi = _g.DpiY > 1.0f ? _g.DpiY : 96.0f;
+            // Geist is drawn at exactly its DIP size (0.75 pt per DIP); Inter keeps the
+            // 0.78 bump that compensates for its smaller x-height.
+            float dipToPoints = UiFonts.IsGeist ? 0.75f : 0.78f;
+            float sz = Math.Max(6.0f, fontSizeDip * scale * Math.Clamp(TextScaleMultiplier, 0.65f, 2.1f) * dipToPoints * (96.0f / surfaceDpi));
+            float tracking = trackingDip * scale;
+
+            var fontKey = (Mono: mono, Size: MathF.Round(sz * 10.0f) / 10.0f, Bold: bold);
+            if (!_fontCache.TryGetValue(fontKey, out Font font))
+            {
+                if (_fontCache.Count >= 96)
+                {
+                    foreach (Font cached in _fontCache.Values) cached.Dispose();
+                    _fontCache.Clear();
+                }
+                font = UiFonts.Get(fontKey.Size, bold, mono);
+                _fontCache[fontKey] = font;
+            }
+
+            StringFormat sf = StringFormat.GenericTypographic;
+            float total = 0.0f;
+            // GenericTypographic trims trailing whitespace, so a space would
+            // measure as zero and collapse tracked text ('21JANUARY,2023.').
+            float spaceWidth = Math.Max(1.0f,
+                _g.MeasureString("i i", font, PointF.Empty, sf).Width -
+                2.0f * _g.MeasureString("i", font, PointF.Empty, sf).Width);
+            var widths = new float[text.Length];
+            for (int i = 0; i < text.Length; ++i)
+            {
+                float glyph = char.IsWhiteSpace(text[i])
+                    ? spaceWidth
+                    : _g.MeasureString(text[i].ToString(), font, PointF.Empty, sf).Width;
+                widths[i] = glyph + tracking;
+                total += widths[i];
+            }
+            if (text.Length > 0) total -= tracking;
+
+            float x = rect.Left + (hAlign switch
+            {
+                StringAlignment.Center => (rect.Width - total) * 0.5f,
+                StringAlignment.Far => rect.Width - total,
+                _ => 0.0f
+            });
+            float lineHeight = _g.MeasureString("Ag", font, PointF.Empty, sf).Height;
+            float y = rect.Top + (rect.Height - lineHeight) * 0.5f;
+
+            _paintBrush.Color = ApplyOpacity(color);
+            for (int i = 0; i < text.Length; ++i)
+            {
+                if (text[i] != ' ') _g.DrawString(text[i].ToString(), font, _paintBrush, new PointF(x, y), sf);
+                x += widths[i];
+            }
         }
 
         public void DrawLucideIcon(string iconName, float cx, float cy, float sizeDip, Color color, float strokeWidth = 1.75f)
         {
             if (_g == null) return;
+            cx = SpringPresets.SnapDipToWholePixel(cx, _dpiScale);
+            cy = SpringPresets.SnapDipToWholePixel(cy, _dpiScale);
             float r = sizeDip * 0.5f;
             switch (iconName)
             {
+                case "search":
+                    DrawCircle(cx - r * 0.12f, cy - r * 0.12f, r * 0.48f, color, strokeWidth);
+                    DrawLine(cx + r * 0.22f, cy + r * 0.22f, cx + r * 0.70f, cy + r * 0.70f, color, strokeWidth);
+                    break;
                 case "music":
                     DrawLine(cx - r * 0.4f, cy + r * 0.4f, cx - r * 0.4f, cy - r * 0.6f, color, strokeWidth);
                     DrawLine(cx + r * 0.55f, cy + r * 0.25f, cx + r * 0.55f, cy - r * 0.75f, color, strokeWidth);
@@ -700,12 +1179,54 @@ namespace OpenPixel.Rendering
                     FillCircle(cx, cy + r * 0.26f, r * 0.16f, color);
                     break;
                 case "volume":
-                    DrawLine(cx - r * 0.65f, cy - r * 0.28f, cx - r * 0.65f, cy + r * 0.28f, color, strokeWidth);
-                    DrawLine(cx - r * 0.65f, cy - r * 0.28f, cx - r * 0.10f, cy - r * 0.62f, color, strokeWidth);
-                    DrawLine(cx - r * 0.65f, cy + r * 0.28f, cx - r * 0.10f, cy + r * 0.62f, color, strokeWidth);
-                    DrawLine(cx - r * 0.10f, cy - r * 0.62f, cx - r * 0.10f, cy + r * 0.62f, color, strokeWidth);
-                    DrawLine(cx + r * 0.32f, cy - r * 0.35f, cx + r * 0.52f, cy, color, strokeWidth);
-                    DrawLine(cx + r * 0.52f, cy, cx + r * 0.32f, cy + r * 0.35f, color, strokeWidth);
+                case "volume-2":
+                case "volume1":
+                case "volume-x":
+                    DrawLine(cx - r * 0.72f, cy - r * 0.28f, cx - r * 0.72f, cy + r * 0.28f, color, strokeWidth);
+                    DrawLine(cx - r * 0.72f, cy - r * 0.28f, cx - r * 0.40f, cy - r * 0.28f, color, strokeWidth);
+                    DrawLine(cx - r * 0.72f, cy + r * 0.28f, cx - r * 0.40f, cy + r * 0.28f, color, strokeWidth);
+                    DrawLine(cx - r * 0.40f, cy - r * 0.28f, cx - r * 0.05f, cy - r * 0.62f, color, strokeWidth);
+                    DrawLine(cx - r * 0.40f, cy + r * 0.28f, cx - r * 0.05f, cy + r * 0.62f, color, strokeWidth);
+                    DrawLine(cx - r * 0.05f, cy - r * 0.62f, cx - r * 0.05f, cy + r * 0.62f, color, strokeWidth);
+                    if (iconName == "volume-x")
+                    {
+                        DrawLine(cx + r * 0.28f, cy - r * 0.28f, cx + r * 0.78f, cy + r * 0.28f, color, strokeWidth);
+                        DrawLine(cx + r * 0.78f, cy - r * 0.28f, cx + r * 0.28f, cy + r * 0.28f, color, strokeWidth);
+                    }
+                    else
+                    {
+                        using var arcPen = new Pen(ApplyOpacity(color), strokeWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                        _g.DrawArc(arcPen, cx + r * 0.02f, cy - r * 0.36f, r * 0.44f, r * 0.72f, -55, 110);
+                        if (iconName == "volume-2" || iconName == "volume")
+                            _g.DrawArc(arcPen, cx + r * 0.14f, cy - r * 0.62f, r * 0.68f, r * 1.24f, -55, 110);
+                    }
+                    break;
+                case "wifi":
+                    using (var wfPen = new Pen(ApplyOpacity(color), strokeWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    {
+                        _g.DrawArc(wfPen, cx - r * 0.85f, cy - r * 0.55f, r * 1.70f, r * 1.70f, 225, 90);
+                        _g.DrawArc(wfPen, cx - r * 0.52f, cy - r * 0.22f, r * 1.04f, r * 1.04f, 225, 90);
+                    }
+                    FillCircle(cx, cy + r * 0.50f, r * 0.14f, color);
+                    break;
+                case "bluetooth":
+                    DrawLine(cx, cy - r * 0.78f, cx, cy + r * 0.78f, color, strokeWidth);
+                    DrawLine(cx, cy - r * 0.78f, cx + r * 0.48f, cy - r * 0.34f, color, strokeWidth);
+                    DrawLine(cx + r * 0.48f, cy - r * 0.34f, cx - r * 0.42f, cy + r * 0.34f, color, strokeWidth);
+                    DrawLine(cx - r * 0.42f, cy - r * 0.34f, cx + r * 0.48f, cy + r * 0.34f, color, strokeWidth);
+                    DrawLine(cx + r * 0.48f, cy + r * 0.34f, cx, cy + r * 0.78f, color, strokeWidth);
+                    break;
+                case "moon":
+                    using (var mnPen = new Pen(ApplyOpacity(color), strokeWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    {
+                        _g.DrawArc(mnPen, cx - r * 0.65f, cy - r * 0.65f, r * 1.30f, r * 1.30f, 35, 235);
+                        _g.DrawArc(mnPen, cx - r * 0.25f, cy - r * 0.68f, r * 1.05f, r * 1.05f, 115, 130);
+                    }
+                    break;
+                case "bell-off":
+                    DrawCircle(cx, cy - r * 0.10f, r * 0.48f, color, strokeWidth);
+                    DrawLine(cx - r * 0.65f, cy + r * 0.42f, cx + r * 0.65f, cy + r * 0.42f, color, strokeWidth);
+                    DrawLine(cx - r * 0.72f, cy - r * 0.72f, cx + r * 0.72f, cy + r * 0.72f, color, strokeWidth);
                     break;
                 case "sun":
                     DrawCircle(cx, cy, r * 0.42f, color, strokeWidth);
@@ -741,6 +1262,18 @@ namespace OpenPixel.Rendering
                     DrawLine(cx + r * 0.55f, cy - r * 0.25f, cx + r * 0.85f, cy - r * 0.25f, color, strokeWidth);
                     DrawLine(cx + r * 0.55f, cy + r * 0.25f, cx + r * 0.85f, cy + r * 0.25f, color, strokeWidth);
                     break;
+                case "command":
+                {
+                    // Apple Command key (⌘): central square + 4 corner loops
+                    float lr = r * 0.28f;
+                    float off = r * 0.50f;
+                    DrawRoundedRect(new RectangleF(cx - off + lr, cy - off + lr, (off - lr) * 2f, (off - lr) * 2f), 0.5f, color, strokeWidth);
+                    DrawCircle(cx - off, cy - off, lr, color, strokeWidth);
+                    DrawCircle(cx + off, cy - off, lr, color, strokeWidth);
+                    DrawCircle(cx - off, cy + off, lr, color, strokeWidth);
+                    DrawCircle(cx + off, cy + off, lr, color, strokeWidth);
+                    break;
+                }
                 case "key":
                     DrawCircle(cx - r * 0.35f, cy, r * 0.36f, color, strokeWidth);
                     DrawLine(cx, cy, cx + r * 0.80f, cy, color, strokeWidth);
@@ -756,6 +1289,69 @@ namespace OpenPixel.Rendering
                     DrawCircle(cx, cy, r * 0.80f, color, strokeWidth);
                     FillCircle(cx, cy - r * 0.35f, r * 0.12f, color);
                     DrawLine(cx, cy - r * 0.08f, cx, cy + r * 0.44f, color, strokeWidth);
+                    break;
+                case "plus":
+                    DrawLine(cx - r * 0.55f, cy, cx + r * 0.55f, cy, color, strokeWidth);
+                    DrawLine(cx, cy - r * 0.55f, cx, cy + r * 0.55f, color, strokeWidth);
+                    break;
+                case "check":
+                    DrawLine(cx - r * 0.5f, cy + r * 0.02f, cx - r * 0.1f, cy + r * 0.4f, color, strokeWidth);
+                    DrawLine(cx - r * 0.1f, cy + r * 0.4f, cx + r * 0.55f, cy - r * 0.4f, color, strokeWidth);
+                    break;
+                case "chevron-right":
+                    DrawLine(cx - r * 0.22f, cy - r * 0.5f, cx + r * 0.3f, cy, color, strokeWidth);
+                    DrawLine(cx + r * 0.3f, cy, cx - r * 0.22f, cy + r * 0.5f, color, strokeWidth);
+                    break;
+                case "chevron-down":
+                    DrawLine(cx - r * 0.5f, cy - r * 0.18f, cx, cy + r * 0.32f, color, strokeWidth);
+                    DrawLine(cx, cy + r * 0.32f, cx + r * 0.5f, cy - r * 0.18f, color, strokeWidth);
+                    break;
+                case "camera":
+                    DrawRoundedRect(new RectangleF(cx - r * 0.92f, cy - r * 0.55f, r * 1.84f, r * 1.28f), 2.6f, color, strokeWidth);
+                    DrawCircle(cx, cy + r * 0.08f, r * 0.33f, color, strokeWidth);
+                    DrawLine(cx - r * 0.4f, cy - r * 0.55f, cx - r * 0.24f, cy - r * 0.82f, color, strokeWidth);
+                    DrawLine(cx - r * 0.24f, cy - r * 0.82f, cx + r * 0.24f, cy - r * 0.82f, color, strokeWidth);
+                    DrawLine(cx + r * 0.24f, cy - r * 0.82f, cx + r * 0.4f, cy - r * 0.55f, color, strokeWidth);
+                    break;
+                case "scissors":
+                    DrawCircle(cx - r * 0.42f, cy + r * 0.48f, r * 0.2f, color, strokeWidth);
+                    DrawCircle(cx - r * 0.42f, cy - r * 0.48f, r * 0.2f, color, strokeWidth);
+                    DrawLine(cx - r * 0.26f, cy + r * 0.36f, cx + r * 0.5f, cy - r * 0.55f, color, strokeWidth);
+                    DrawLine(cx - r * 0.26f, cy - r * 0.36f, cx + r * 0.5f, cy + r * 0.55f, color, strokeWidth);
+                    break;
+                case "download":
+                    DrawLine(cx, cy - r * 0.62f, cx, cy + r * 0.18f, color, strokeWidth);
+                    DrawLine(cx - r * 0.36f, cy - r * 0.12f, cx, cy + r * 0.28f, color, strokeWidth);
+                    DrawLine(cx + r * 0.36f, cy - r * 0.12f, cx, cy + r * 0.28f, color, strokeWidth);
+                    DrawLine(cx - r * 0.55f, cy + r * 0.6f, cx + r * 0.55f, cy + r * 0.6f, color, strokeWidth);
+                    break;
+                case "upload":
+                    DrawLine(cx, cy + r * 0.62f, cx, cy - r * 0.18f, color, strokeWidth);
+                    DrawLine(cx - r * 0.36f, cy + r * 0.12f, cx, cy - r * 0.28f, color, strokeWidth);
+                    DrawLine(cx + r * 0.36f, cy + r * 0.12f, cx, cy - r * 0.28f, color, strokeWidth);
+                    DrawLine(cx - r * 0.55f, cy + r * 0.6f, cx + r * 0.55f, cy + r * 0.6f, color, strokeWidth);
+                    break;
+                case "trash":
+                    DrawLine(cx - r * 0.6f, cy - r * 0.52f, cx + r * 0.6f, cy - r * 0.52f, color, strokeWidth);
+                    DrawLine(cx - r * 0.18f, cy - r * 0.72f, cx + r * 0.18f, cy - r * 0.72f, color, strokeWidth);
+                    DrawLine(cx - r * 0.45f, cy - r * 0.52f, cx - r * 0.38f, cy + r * 0.62f, color, strokeWidth);
+                    DrawLine(cx + r * 0.45f, cy - r * 0.52f, cx + r * 0.38f, cy + r * 0.62f, color, strokeWidth);
+                    DrawLine(cx - r * 0.38f, cy + r * 0.62f, cx + r * 0.38f, cy + r * 0.62f, color, strokeWidth);
+                    break;
+                case "file-text":
+                    DrawRoundedRect(new RectangleF(cx - r * 0.45f, cy - r * 0.72f, r * 0.9f, r * 1.44f), 2f, color, strokeWidth);
+                    DrawLine(cx - r * 0.2f, cy - r * 0.28f, cx + r * 0.2f, cy - r * 0.28f, color, strokeWidth);
+                    DrawLine(cx - r * 0.2f, cy + r * 0.02f, cx + r * 0.2f, cy + r * 0.02f, color, strokeWidth);
+                    break;
+                case "image":
+                    DrawRoundedRect(new RectangleF(cx - r * 0.8f, cy - r * 0.62f, r * 1.6f, r * 1.28f), 2.4f, color, strokeWidth);
+                    DrawCircle(cx - r * 0.34f, cy - r * 0.2f, r * 0.16f, color, strokeWidth);
+                    DrawLine(cx - r * 0.7f, cy + r * 0.52f, cx - r * 0.08f, cy - r * 0.08f, color, strokeWidth);
+                    DrawLine(cx - r * 0.08f, cy - r * 0.08f, cx + r * 0.68f, cy + r * 0.52f, color, strokeWidth);
+                    break;
+                case "battery":
+                    DrawRoundedRect(new RectangleF(cx - r * 0.82f, cy - r * 0.38f, r * 1.5f, r * 0.76f), 2f, color, strokeWidth);
+                    DrawLine(cx + r * 0.72f, cy - r * 0.16f, cx + r * 0.72f, cy + r * 0.16f, color, strokeWidth * 1.6f);
                     break;
                 default:
                     DrawCircle(cx, cy, r * 0.65f, color, strokeWidth);
@@ -801,9 +1397,9 @@ namespace OpenPixel.Rendering
 
         public void ClearHitRegions() => _hitRegions.Clear();
 
-        public void AddHitRegion(string id, RectangleF r, Action onClick, Action<float> onDrag = null)
+        public void AddHitRegion(string id, RectangleF r, Action onClick, Action<float> onDrag = null, bool verticalDrag = false)
         {
-            _hitRegions.Add(new HitRegion { Id = id, Rect = r, OnClick = onClick, OnDrag = onDrag });
+            _hitRegions.Add(new HitRegion { Id = id, Rect = r, OnClick = onClick, OnDrag = onDrag, VerticalDrag = verticalDrag });
         }
 
         public bool IsHovered(RectangleF r, float dipX, float dipY) => r.Contains(dipX, dipY);
@@ -818,7 +1414,9 @@ namespace OpenPixel.Rendering
                     if (hr.OnDrag != null)
                     {
                         _activeDragId = hr.Id;
-                        float norm = Math.Clamp((dipX - hr.Rect.Left) / Math.Max(1.0f, hr.Rect.Width), 0.0f, 1.0f);
+                        float norm = hr.VerticalDrag
+                            ? Math.Clamp(1.0f - (dipY - hr.Rect.Top) / Math.Max(1.0f, hr.Rect.Height), 0.0f, 1.0f)
+                            : Math.Clamp((dipX - hr.Rect.Left) / Math.Max(1.0f, hr.Rect.Width), 0.0f, 1.0f);
                         hr.OnDrag(norm);
                         return true;
                     }
@@ -841,7 +1439,9 @@ namespace OpenPixel.Rendering
                 if (hr.OnDrag != null && (hr.Id == _activeDragId || hr.Rect.Contains(dipX, dipY)))
                 {
                     _activeDragId = hr.Id;
-                    float norm = Math.Clamp((dipX - hr.Rect.Left) / Math.Max(1.0f, hr.Rect.Width), 0.0f, 1.0f);
+                    float norm = hr.VerticalDrag
+                        ? Math.Clamp(1.0f - (dipY - hr.Rect.Top) / Math.Max(1.0f, hr.Rect.Height), 0.0f, 1.0f)
+                        : Math.Clamp((dipX - hr.Rect.Left) / Math.Max(1.0f, hr.Rect.Width), 0.0f, 1.0f);
                     hr.OnDrag(norm);
                     return true;
                 }
@@ -1040,6 +1640,27 @@ namespace OpenPixel.Rendering
         [DllImport("user32.dll")] public static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
         [DllImport("user32.dll")] public static extern bool LockWorkStation();
+
+        // Taskbar mirroring: enumerate real app windows and focus them.
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextLengthW(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+        public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+
+        // Desktop layer (WorkerW) hosting for widgets and the live wallpaper.
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string className, string windowName);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+        [DllImport("user32.dll")] public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+        [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint Msg, UIntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
 
         [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
         [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr hdc);

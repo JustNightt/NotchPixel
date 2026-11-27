@@ -132,10 +132,29 @@ public final class HoldPowerButton extends View {
         borderPaint.setColor(holding ? fillColor : (lightSurface ? Color.argb(70, 30, 40, 55) : Color.argb(70, 255, 255, 255)));
         canvas.drawRoundRect(rect, rad, rad, borderPaint);
 
-        textPaint.setTextSize(13 * dp);
+        String displayText = holding ? ("Hold " + label + "...") : ("Hold " + label);
+        float maxTextW = Math.max(12f, w - 16f * dp);
+        float sz = 12f * dp;
+        textPaint.setTextSize(sz);
+        while (sz > 8.5f * dp && textPaint.measureText(displayText) > maxTextW) {
+            sz -= 0.5f * dp;
+            textPaint.setTextSize(sz);
+        }
         textPaint.setColor(lightSurface ? Color.rgb(18, 22, 28) : Color.rgb(245, 247, 250));
         Paint.FontMetrics fm = textPaint.getFontMetrics();
         float cy = h / 2f - (fm.ascent + fm.descent) / 2f;
-        canvas.drawText(holding ? ("Hold " + label + "...") : ("Hold: " + label), w / 2f, cy, textPaint);
+        canvas.save();
+        clipPath.reset();
+        clipPath.addRoundRect(rect, rad, rad, Path.Direction.CW);
+        canvas.clipPath(clipPath);
+        canvas.drawText(displayText, w / 2f, cy, textPaint);
+        canvas.restore();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        holding = false;
+        handler.removeCallbacksAndMessages(null);
+        super.onDetachedFromWindow();
     }
 }

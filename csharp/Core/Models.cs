@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Text.Json.Serialization;
 
 namespace OpenPixel.Core
 {
@@ -132,7 +133,8 @@ namespace OpenPixel.Core
         PcStats = 9,
         AnalogClock = 10,
         PlainWeather = 11,
-        CustomTile = 12
+        CustomTile = 12,
+        StockPrices = 13
     }
 
     public enum TopPopupType
@@ -412,8 +414,12 @@ namespace OpenPixel.Core
         public double DurationSec { get; set; } = 0.0;
         public Color DominantColor { get; set; } = Color.FromArgb(255, 78, 179, 255);
         public Color SecondaryColor { get; set; } = Color.FromArgb(255, 26, 122, 240);
+        [JsonIgnore] public Bitmap AlbumArt { get; set; }
+        [JsonIgnore] public Bitmap SourceAppIcon { get; set; }
         public List<LyricLine> Lyrics { get; set; } = new();
         public int ActiveLyricIndex { get; set; } = -1;
+        public string LyricsTrackKey { get; set; } = "";
+        public bool LyricsFetching { get; set; } = false;
     }
 
     public sealed class PinnedWebSite
@@ -432,6 +438,8 @@ namespace OpenPixel.Core
         public string TimeStr { get; set; } = "";
         public string RelativeStr { get; set; } = "";
         public Color AccentColor { get; set; } = Color.FromArgb(255, 58, 130, 247);
+        public int ProcessId { get; set; } = 0;
+        public string TargetUrl { get; set; } = "";
     }
 
     public sealed class AgentSessionItem
@@ -445,6 +453,8 @@ namespace OpenPixel.Core
         public bool NeedsInput { get; set; } = false;
         public int ProcessId { get; set; } = 0;
         public long UpdatedMs { get; set; }
+        public string Source { get; set; } = "api";
+        public string FilePath { get; set; } = "";
     }
 
     public sealed class ChatMessageItem
@@ -476,6 +486,8 @@ namespace OpenPixel.Core
         public bool IsCurrent { get; set; }
         public bool IsPinned { get; set; }
         public long TimestampMs { get; set; }
+        public string ImagePath { get; set; } = "";
+        public List<string> FilePaths { get; set; } = new();
     }
 
     public sealed class TodoItem
@@ -489,6 +501,7 @@ namespace OpenPixel.Core
         public long Id { get; set; }
         public string Title { get; set; } = "";
         public long DueTimestampMs { get; set; }
+        public long DueUnixMs { get; set; } = 0;
         public string RepeatRule { get; set; } = "None";
         public bool Triggered { get; set; }
         public bool Completed { get; set; }
@@ -507,7 +520,16 @@ namespace OpenPixel.Core
     {
         public string Label { get; set; } = "+ Add";
         public string TargetPath { get; set; } = "";
+        public string IconPath { get; set; } = "";
         public Color BadgeColor { get; set; } = Color.FromArgb(255, 64, 156, 255);
+    }
+
+    public sealed class LauncherSlotConfig
+    {
+        public string Label { get; set; } = "+ Add";
+        public string TargetPath { get; set; } = "";
+        public string IconPath { get; set; } = "";
+        public int BadgeColorArgb { get; set; } = Color.FromArgb(255, 64, 156, 255).ToArgb();
     }
 
     public sealed class PairedDeckDevice
@@ -525,11 +547,13 @@ namespace OpenPixel.Core
 
     public sealed class HardwareTelemetry
     {
-        public float Fps { get; set; } = 60.0f;
+        public float Fps { get; set; } = 0.0f;
+        public bool FpsAvailable { get; set; } = false;
         public float CpuPercent { get; set; } = 0.0f;
         public float CpuTempC { get; set; } = 0.0f;
         public bool CpuTempAvailable { get; set; } = false; // Never fake motherboard temps on desktops!
         public float GpuPercent { get; set; } = 0.0f;
+        public bool GpuPercentAvailable { get; set; } = false;
         public float GpuTempC { get; set; } = 0.0f;
         public bool GpuTempAvailable { get; set; } = false;
         public float RamPercent { get; set; } = 0.0f;

@@ -14,11 +14,13 @@ import android.view.View;
 public final class LiquidStatCardView extends View {
     private final String metricTitle;
     private final int accentColor;
-    private int percent = 0;
+    private int targetPercent = 0;
+    private float displayPercent = 0f;
     private boolean tempAvailable = false;
     private int tempC = 0;
     private boolean lightSurface = false;
     private float wavePhase = 0f;
+    private long lastFrameMs = 0L;
 
     private final Paint cardPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -30,6 +32,7 @@ public final class LiquidStatCardView extends View {
     private final RectF cardRect = new RectF();
     private final Path clipPath = new Path();
     private final Path wavePath = new Path();
+    private final Path crestPath = new Path();
 
     public LiquidStatCardView(Context ctx, String title, int accentColor) {
         super(ctx);
@@ -42,11 +45,14 @@ public final class LiquidStatCardView extends View {
     }
 
     public void updateMetric(int pct, boolean hasTemp, int tC) {
-        this.percent = Math.max(0, Math.min(100, pct));
+        int clamped = Math.max(0, Math.min(100, pct));
+        boolean changed = (clamped != this.targetPercent || hasTemp != this.tempAvailable || tC != this.tempC);
+        this.targetPercent = clamped;
         this.tempAvailable = hasTemp;
         this.tempC = tC;
-        this.wavePhase += 0.45f;
-        invalidate();
+        if (changed || Math.abs(targetPercent - displayPercent) > 0.25f) {
+            postInvalidateOnAnimation();
+        }
     }
 
     public void setLightSurface(boolean light) {
@@ -58,7 +64,9 @@ public final class LiquidStatCardView extends View {
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         float dp = getResources().getDisplayMetrics().density;
         int w = MeasureSpec.getSize(widthMeasureSpec);
-        setMeasuredDimension(w, Math.round(112 * dp));
+        int hMode = MeasureSpec.getMode(heightMeasureSpec);
+        int h = (hMode == MeasureSpec.EXACTLY) ? MeasureSpec.getSize(heightMeasureSpec) : Math.round(112 * dp);
+        setMeasuredDimension(w, h);
     }
 
     @Override
@@ -70,40 +78,64 @@ public final class LiquidStatCardView extends View {
         float rad = 18 * dp;
         cardRect.set(dp, dp, w - dp, h - dp);
 
+        long now = android.os.SystemClock.uptimeMillis();
+        float dt = lastFrameMs > 0L ? Math.min(0.05f, Math.max(0.004f, (now - lastFrameMs) / 1000f)) : 0.016f;
+        lastFrameMs = now;
+
+        float diff = targetPercent - displayPercent;
+        boolean stillEasing = Math.abs(diff) > 0.15f;
+        if (stillEasing) {
+            displayPercent += diff * (1f - (float) Math.exp(-dt * 7.5f));
+            wavePhase += dt * 2.4f;
+        } else {
+            displayPercent = targetPercent;
+        }
+
         cardPaint.setColor(lightSurface ? Color.argb(235, 240, 244, 250) : Color.argb(225, 22, 26, 34));
         canvas.drawRoundRect(cardRect, rad, rad, cardPaint);
 
-        // Liquid fill level
+        // Smooth interpolated liquid fill level
         canvas.save();
         clipPath.reset();
         clipPath.addRoundRect(cardRect, rad, rad, Path.Direction.CW);
         canvas.clipPath(clipPath);
 
-        float fillFrac = Math.max(0.06f, percent / 100f);
+        float fillFrac = Math.max(0.06f, displayPercent / 100f);
         float baseY = cardRect.bottom - cardRect.height() * fillFrac;
-        float amp = 4.5f * dp;
+        float amp = 3.8f * dp;
 
         wavePath.reset();
+        crestPath.reset();
         wavePath.moveTo(cardRect.left, cardRect.bottom);
-        wavePath.lineTo(cardRect.left, baseY);
         int steps = 16;
-        for (int i = 0; i <= steps; i++) {
+        float prevX = cardRect.left;
+        float prevY = baseY + (float) Math.sin(wavePhase) * amp;
+        wavePath.lineTo(prevX, prevY);
+        crestPath.moveTo(prevX, prevY);
+        for (int i = 1; i <= steps; i++) {
             float x = cardRect.left + (cardRect.width() * i / (float) steps);
-            float y = baseY + (float) Math.sin(wavePhase + i * 0.6f) * amp;
-            wavePath.lineTo(x, y);
+            float y = baseY + (float) Math.sin(wavePhase + i * 0.55f) * amp;
+            float midX = (prevX + x) * 0.5f;
+            float midY = (prevY + y) * 0.5f;
+            wavePath.quadTo(prevX, prevY, midX, midY);
+            crestPath.quadTo(prevX, prevY, midX, midY);
+            prevX = x;
+            prevY = y;
         }
+        wavePath.lineTo(cardRect.right, prevY);
+        crestPath.lineTo(cardRect.right, prevY);
         wavePath.lineTo(cardRect.right, cardRect.bottom);
         wavePath.close();
 
         liquidPaint.setColor(accentColor);
-        liquidPaint.setAlpha(72);
+        liquidPaint.setAlpha(74);
         canvas.drawPath(wavePath, liquidPaint);
 
         liquidCrestPaint.setColor(accentColor);
-        liquidCrestPaint.setAlpha(120);
+        liquidCrestPaint.setAlpha(150);
         liquidCrestPaint.setStyle(Paint.Style.STROKE);
-        liquidCrestPaint.setStrokeWidth(1.5f * dp);
-        canvas.drawLine(cardRect.left, baseY, cardRect.right, baseY, liquidCrestPaint);
+        liquidCrestPaint.setStrokeWidth(1.6f * dp);
+        canvas.drawPath(crestPath, liquidCrestPaint);
 
         canvas.restore();
 
@@ -116,10 +148,14 @@ public final class LiquidStatCardView extends View {
 
         valuePaint.setTextSize(26 * dp);
         valuePaint.setColor(lightSurface ? Color.rgb(16, 20, 26) : Color.rgb(248, 250, 252));
-        canvas.drawText(percent + "%", 14 * dp, 64 * dp, valuePaint);
+        canvas.drawText(Math.round(displayPercent) + "%", 14 * dp, 64 * dp, valuePaint);
 
         tempPaint.setTextSize(12 * dp);
         tempPaint.setColor(tempAvailable ? accentColor : (lightSurface ? Color.rgb(110, 120, 132) : Color.rgb(125, 134, 148)));
         canvas.drawText(tempAvailable ? (tempC + " C") : "Temp N/A", 14 * dp, h - 14 * dp, tempPaint);
+
+        if (stillEasing) {
+            postInvalidateOnAnimation();
+        }
     }
 }

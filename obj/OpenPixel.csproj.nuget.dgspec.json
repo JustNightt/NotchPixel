@@ -10,7 +10,7 @@
         "projectUniqueName": "C:\\Users\\Awab Abidar\\Documents\\Apps\\NotchPixel New\\OpenPixel.csproj",
         "projectName": "OpenPixel",
         "projectPath": "C:\\Users\\Awab Abidar\\Documents\\Apps\\NotchPixel New\\OpenPixel.csproj",
-        "packagesPath": "C:\\Users\\Awab Abidar\\Documents\\Apps\\NotchPixel New\\.nuget_packages",
+        "packagesPath": "C:\\Users\\Awab Abidar\\.nuget\\packages\\",
         "outputPath": "C:\\Users\\Awab Abidar\\Documents\\Apps\\NotchPixel New\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
@@ -18,12 +18,15 @@
           "C:\\Users\\Awab Abidar\\AppData\\Roaming\\NuGet\\NuGet.Config"
         ],
         "originalTargetFrameworks": [
-          "net10.0-windows"
+          "net10.0-windows10.0.19041.0"
         ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
         "frameworks": {
-          "net10.0-windows": {
-            "framework": "net10.0-windows7.0",
-            "targetAlias": "net10.0-windows",
+          "net10.0-windows10.0.19041.0": {
+            "framework": "net10.0-windows10.0.19041",
+            "targetAlias": "net10.0-windows10.0.19041.0",
             "projectReferences": {}
           }
         },
@@ -40,9 +43,19 @@
         "SdkAnalysisLevel": "10.0.400"
       },
       "frameworks": {
-        "net10.0-windows": {
-          "framework": "net10.0-windows7.0",
-          "targetAlias": "net10.0-windows",
+        "net10.0-windows10.0.19041.0": {
+          "framework": "net10.0-windows10.0.19041",
+          "targetAlias": "net10.0-windows10.0.19041.0",
+          "dependencies": {
+            "Microsoft.Web.WebView2": {
+              "target": "Package",
+              "version": "[1.0.4370.26, )"
+            },
+            "System.Management": {
+              "target": "Package",
+              "version": "[10.0.2, )"
+            }
+          },
           "imports": [
             "net461",
             "net462",
@@ -54,8 +67,17 @@
           ],
           "assetTargetFallback": true,
           "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.Windows.SDK.NET.Ref",
+              "version": "[10.0.19041.57, 10.0.19041.57]"
+            }
+          ],
           "frameworkReferences": {
             "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            },
+            "Microsoft.Windows.SDK.NET.Ref.Windows": {
               "privateAssets": "all"
             },
             "Microsoft.WindowsDesktop.App.WindowsForms": {

@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "OpenPixelDeck"
+rootProject.name = "NotchPixelDeck"
 include(":app")

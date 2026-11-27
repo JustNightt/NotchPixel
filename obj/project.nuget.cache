@@ -1,8 +1,12 @@
 {
   "version": 2,
-  "dgSpecHash": "GaY83+LMCXw=",
+  "dgSpecHash": "08LB0gwpSjw=",
   "success": true,
   "projectFilePath": "C:\\Users\\Awab Abidar\\Documents\\Apps\\NotchPixel New\\OpenPixel.csproj",
-  "expectedPackageFiles": [],
+  "expectedPackageFiles": [
+    "C:\\Users\\Awab Abidar\\.nuget\\packages\\microsoft.web.webview2\\1.0.4370.26\\microsoft.web.webview2.1.0.4370.26.nupkg.sha512",
+    "C:\\Users\\Awab Abidar\\.nuget\\packages\\system.management\\10.0.2\\system.management.10.0.2.nupkg.sha512",
+    "C:\\Users\\Awab Abidar\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.19041.57\\microsoft.windows.sdk.net.ref.10.0.19041.57.nupkg.sha512"
+  ],
   "logs": []
 }

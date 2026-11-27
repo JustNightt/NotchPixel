@@ -79,6 +79,26 @@ namespace OpenPixel.Core
             return MathF.Abs(Target - Value) <= eps && MathF.Abs(Velocity) <= eps;
         }
 
+        // The hero demo's own "ease": v += (target - v) * (1 - e^(-dt * rate)).
+        // Used where the demo drives a value that way instead of with a spring.
+        public bool StepExponential(float elapsedSec, float rate, float speedMultiplier = 1.0f, bool reduceMotion = false)
+        {
+            if (reduceMotion)
+            {
+                Snap(Target);
+                return false;
+            }
+            float dt = Math.Clamp(elapsedSec * speedMultiplier, 0.0f, 0.05f);
+            Value += (Target - Value) * (1.0f - MathF.Exp(-dt * rate));
+            if (MathF.Abs(Target - Value) < 0.004f)
+            {
+                Value = Target;
+                Velocity = 0.0f;
+                return false;
+            }
+            return true;
+        }
+
         public bool Step(float elapsedSec, in SpringSpec spec, float speedMultiplier = 1.0f, bool reduceMotion = false)
         {
             if (reduceMotion)

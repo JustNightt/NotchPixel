@@ -34,6 +34,7 @@ Write-Host "[1/6] Compiling Android resources with aapt2..."
 if ($LASTEXITCODE -ne 0) { throw "aapt2 compile failed" }
 
 $ResApk = Join-Path $BuildDir "res-only.apk"
+if (Test-Path $ResApk) { Remove-Item $ResApk -Force }
 Write-Host "[2/6] Linking manifest and generating R.java..."
 & $Aapt2 link `
     --manifest $Manifest `
@@ -50,21 +51,19 @@ $JavaFiles = @(Get-ChildItem -Path $GenSrc, $JavaRoot -Recurse -Filter "*.java" 
 if ($LASTEXITCODE -ne 0) { throw "javac compilation failed" }
 
 Write-Host "[4/6] Dexing bytecode with d8..."
-$ClassFiles = @(Get-ChildItem -Path $ClassesDir -Recurse -Filter "*.class" | ForEach-Object { $_.FullName })
-# One jar instead of thousands of arguments: the raw .class list is longer than
-# the Windows command line can carry once the package has a few classes.
 $ClassesArchive = Join-Path $BuildDir "classes.zip"
 if (Test-Path $ClassesArchive) { Remove-Item $ClassesArchive -Force }
-if ($ClassFiles.Count -gt 0) {
-    Compress-Archive -Path $ClassFiles -DestinationPath $ClassesArchive -CompressionLevel Optimal -Force
-}
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
+[System.IO.Compression.ZipFile]::CreateFromDirectory($ClassesDir, $ClassesArchive)
 & $D8 --release --min-api 28 --lib $AndroidJar --output $DexDir $ClassesArchive
 if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
 
 Write-Host "[5/6] Packaging APK and zipaligning..."
-$UnalignedApk = Join-Path $BuildDir "OpenPixelDeck-unaligned.apk"
-$AlignedApk = Join-Path $BuildDir "OpenPixelDeck-aligned.apk"
-$FinalApk = Join-Path $BuildDir "OpenPixelDeck-debug.apk"
+$UnalignedApk = Join-Path $BuildDir "NotchPixelDeck-unaligned.apk"
+$AlignedApk = Join-Path $BuildDir "NotchPixelDeck-aligned.apk"
+$FinalApk = Join-Path $BuildDir "main.apk"
+$RootApk = Join-Path $AppRoot "main.apk"
 Copy-Item -Force $ResApk $UnalignedApk
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -81,7 +80,7 @@ if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
 
 $Keystore = Join-Path $BuildDir "debug.keystore"
 if (-not (Test-Path $Keystore)) {
-    & $Keytool -genkey -v -keystore $Keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=OpenPixelDeck,O=OpenPixel,C=US" | Out-Null
+    & $Keytool -genkey -v -keystore $Keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=NotchPixelDeck,O=NotchPixel,C=US" | Out-Null
 }
 
 Write-Host "[6/6] Signing & verifying APK..."
@@ -91,4 +90,6 @@ if ($LASTEXITCODE -ne 0) { throw "apksigner sign failed" }
 & $ApkSigner verify --print-certs $FinalApk
 if ($LASTEXITCODE -ne 0) { throw "apksigner verify failed" }
 
+Copy-Item -Force $FinalApk $RootApk
 Write-Host "ANDROID APK READY: $FinalApk"
+Write-Host "ANDROID ROOT APK READY: $RootApk"
