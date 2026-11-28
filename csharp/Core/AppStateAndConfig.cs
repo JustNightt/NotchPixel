@@ -130,8 +130,8 @@ namespace OpenPixel.Core
         public bool ShowObsRecPill { get; set; } = true;
 
         // 8. Gaming (DISABLEABLE GAME OVERLAY: Master Toggle + Off/SlimStrip/Normal)
-        public bool GameOverlayMasterEnabled { get; set; } = false;
-        public GameOverlayMode GameOverlayMode { get; set; } = GameOverlayMode.OffHideCompletely;
+        public bool GameOverlayMasterEnabled { get; set; } = true;
+        public GameOverlayMode GameOverlayMode { get; set; } = GameOverlayMode.SlimStrip;
         public bool GameStripShowFps { get; set; } = true;
         public bool GameStripShowCpu { get; set; } = true;
         public bool GameStripShowGpu { get; set; } = true;
@@ -492,8 +492,8 @@ namespace OpenPixel.Core
     {
         public static long GetTickMs() => Environment.TickCount64;
 
-        // The app was renamed from NotchPixel: carry the old profile (settings,
-        // pinned certificate, diagnostic log) over the first time it starts.
+        // The app shipped as NotchPixel before it was renamed: carry that old profile
+        // (settings, pinned certificate, diagnostic log) over the first time it starts.
         private static bool _legacyAppDataMigrated = false;
 
         private static void MigrateLegacyAppDataOnce()
@@ -683,6 +683,16 @@ namespace OpenPixel.Core
                                     loaded.Theme = SurfaceTheme.LiquidGlass;
                                     loaded.GlassBlurRadius = 20.0f;
                                     loaded.ConfigRevision = 2;
+                                }
+
+                                // One-time migration: any fullscreen app now collapses the
+                                // island into the slim top line instead of hiding it, so a
+                                // fullscreen window never leaves the user without a notch.
+                                if (loaded.ConfigRevision < 3)
+                                {
+                                    loaded.GameOverlayMasterEnabled = true;
+                                    loaded.GameOverlayMode = GameOverlayMode.SlimStrip;
+                                    loaded.ConfigRevision = 3;
                                 }
 
                                 state.Settings = loaded;

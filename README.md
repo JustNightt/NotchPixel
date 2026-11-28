@@ -1,6 +1,6 @@
-# OpenPixel (`v0.5.126`) + NotchPixel Deck (`v1.0.5`)
+# OpenPixel (`v0.5.126`) + OpenPixel Deck (`v1.0.5`)
 
-**OpenPixel** is a native Windows 10/11 Dynamic Island and top-notch desktop overlay built in C# / .NET 10, paired with **NotchPixel Deck** (`App/main.apk`), a local-first Android companion app for wireless media control, trackpad/keyboard input, Stream Deck app launching, synced widgets, and PC power management over Private Wi-Fi.
+**OpenPixel** is a native Windows 10/11 Dynamic Island and top-notch desktop overlay built in C# / .NET 10, paired with **OpenPixel Deck** (`App/main.apk`), a local-first Android companion app for wireless media control, trackpad/keyboard input, Stream Deck app launching, synced widgets, and PC power management over Private Wi-Fi.
 
 ---
 
@@ -29,12 +29,12 @@
 
 ---
 
-## Android Companion App (`NotchPixel Deck` — `App/main.apk`)
+## Android Companion App (`OpenPixel Deck` — `App/main.apk`)
 
 - **Private Wi-Fi QR Pairing**: Scan the QR code shown in OpenPixel on the same Private Wi-Fi network, confirm the interactive approval prompt on Windows, and lock in a pinned SHA-256 TLS certificate + AES-GCM encrypted auth token.
 - **Kyant0-Style Liquid Glass Bottom Bar**: Spring-animated, draggable liquid glass capsule tab bar across **Now**, **Pad**, **Apps**, **Modes**, and **PC**, with smoked translucent glass cards and full-app music color sync (plus 5 custom gradient presets: `None`, `Midnight`, `Crimson`, `Aurora`, `Emerald`).
 - **Now Playing & Live Audio Wave**: Album art, seek/volume liquid sliders, play/pause/skip, lock-screen media notification, and a zero-lag cached-shader audio wave backdrop that stops when silent.
-- **Smooth Widgets & File Shelf Previews**: Spring-interpolated CPU / GPU / RAM cards, synced **PC Clipboard** (tap to copy), synced **PC To-Do** (tap to toggle or `+ Add`), and **PC Shelf** with rounded image thumbnails (tap to **Download** to `Downloads/NotchPixel/` or **Copy**).
+- **Smooth Widgets & File Shelf Previews**: Spring-interpolated CPU / GPU / RAM cards, synced **PC Clipboard** (tap to copy), synced **PC To-Do** (tap to toggle or `+ Add`), and **PC Shelf** with rounded image thumbnails (tap to **Download** to `Downloads/OpenPixel/` or **Copy**).
 - **Wireless Trackpad & Keyboard (`Pad`)**: Coalesced UDP mouse movement (`47826`) with smooth tapered glowing ribbon cursor, tap-to-click, two-finger right-click/scroll, hold-to-drag, and direct Unicode text/shortcut input.
 - **Stream Deck & Landscape Fullscreen (`Apps`)**: Launch 6 pinned PC apps (with custom icons) or enter non-scrolling Landscape Fullscreen Deck mode with a right-hand control sidebar (**Mute Audio**, **Mute Mic**, **Test Audio**, **Exit Deck**).
 - **Modes (`Game`, `Present`, `Movie`, `Work`)**: Dedicated remote shortcuts for recording/screenshots, presentation slides + timer, movie playback, and focus controls.
@@ -67,7 +67,7 @@ All primary shortcuts can be customized in **Settings → Shortcuts**:
 
 ### Android Companion (`App/main.apk`)
 - **OS**: Android 9.0 (API 28) or higher (targets Android 15 / API 35)
-- **Install**: Transfer `main.apk` to your Android device, allow installation from unknown sources if prompted, and install **NotchPixel Deck**.
+- **Install**: Transfer `main.apk` to your Android device, allow installation from unknown sources if prompted, and install **OpenPixel Deck**.
 - **Pair**: On Windows, open **Settings → PC Deck** (or the **PC Deck** tab), enable **PC Deck**, ensure both devices are on the same Private Wi-Fi network, and scan the QR code in the Android app.
 
 ---
@@ -92,7 +92,7 @@ Outputs the aligned, signed, and verified APK to `App/build/main.apk` and `App/m
 
 ## Privacy & Architecture
 
-OpenPixel and NotchPixel Deck are built strictly local-first:
+OpenPixel and OpenPixel Deck are built strictly local-first:
 - No user accounts, analytics, crash uploaders, or external backend servers.
 - Local network services bind to your LAN/loopback only when enabled: HTTP Shelf (`47824`), TLS PC Deck (`47825`), and UDP Pad/Discovery (`47826`).
 - Android enforces `android:allowBackup="false"` and `android:usesCleartextTraffic="false"`, storing pairing tokens encrypted via Android KeyStore AES-GCM.

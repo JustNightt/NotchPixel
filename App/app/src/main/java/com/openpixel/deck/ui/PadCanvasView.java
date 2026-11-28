@@ -289,7 +289,7 @@ public final class PadCanvasView extends View {
         float rad = 24 * dp;
         bounds.set(dp, dp, w - dp, h - dp);
 
-        surfacePaint.setColor(lightSurface ? Color.argb(185, 245, 248, 252) : Color.argb(46, 255, 255, 255));
+        surfacePaint.setColor(lightSurface ? Color.argb(210, 250, 252, 255) : Color.argb(34, 255, 255, 255));
         canvas.drawRoundRect(bounds, rad, rad, surfacePaint);
 
         // Cached dot grid matrix (single native drawPoints call -> zero lag)
@@ -309,8 +309,8 @@ public final class PadCanvasView extends View {
                 }
             }
         }
-        gridDotPaint.setColor(lightSurface ? Color.argb(56, 30, 45, 70) : Color.argb(66, 210, 225, 245));
-        gridDotPaint.setStrokeWidth(2.4f * dp);
+        gridDotPaint.setColor(lightSurface ? Color.argb(48, 30, 45, 70) : Color.argb(52, 210, 225, 245));
+        gridDotPaint.setStrokeWidth(2f * dp);
         gridDotPaint.setStrokeCap(Paint.Cap.ROUND);
         if (cachedGridPts.length > 0) {
             canvas.drawPoints(cachedGridPts, gridDotPaint);
@@ -330,13 +330,9 @@ public final class PadCanvasView extends View {
                 if (age >= 1f) continue;
                 float frac = (float) i / Math.max(1, trail.size() - 1);
                 float fade = (1f - age) * (0.25f + 0.75f * frac);
-                // Soft outer glow stroke
-                trailPaint.setStrokeWidth((4f + 11f * fade) * dp);
-                trailPaint.setColor(Color.argb((int) (fade * 72), ar, ag, ab));
-                canvas.drawLine(p0.x, p0.y, p1.x, p1.y, trailPaint);
-                // Crisp fluid core ribbon
-                trailPaint.setStrokeWidth((2f + 4.5f * fade) * dp);
-                trailPaint.setColor(Color.argb((int) (fade * 225), ar, ag, ab));
+                // Thin tapered ribbon: speed reads from the width, not from glow.
+                trailPaint.setStrokeWidth((1.6f + 3.4f * fade) * dp);
+                trailPaint.setColor(Color.argb((int) (fade * 205), ar, ag, ab));
                 canvas.drawLine(p0.x, p0.y, p1.x, p1.y, trailPaint);
             }
             trailPaint.setStyle(Paint.Style.FILL);
@@ -346,15 +342,15 @@ public final class PadCanvasView extends View {
             int cr = draggingLock ? 255 : ar;
             int cg = draggingLock ? 198 : ag;
             int cb = draggingLock ? 60 : ab;
-            float outerR = (draggingLock ? 17f : 13.5f) * dp;
-            float innerR = (draggingLock ? 7.5f : 5.5f) * dp;
+            float outerR = (draggingLock ? 13f : 10f) * dp;
+            float innerR = (draggingLock ? 4.6f : 3.4f) * dp;
             trailPaint.setStyle(Paint.Style.FILL);
-            trailPaint.setColor(Color.argb(64, cr, cg, cb));
+            trailPaint.setColor(Color.argb(46, cr, cg, cb));
             canvas.drawCircle(activeCursorX, activeCursorY, outerR, trailPaint);
-            trailPaint.setColor(Color.argb(235, cr, cg, cb));
+            trailPaint.setColor(Color.argb(240, cr, cg, cb));
             canvas.drawCircle(activeCursorX, activeCursorY, innerR, trailPaint);
-            trailPaint.setColor(Color.argb(230, 255, 255, 255));
-            canvas.drawCircle(activeCursorX, activeCursorY, innerR * 0.45f, trailPaint);
+            trailPaint.setColor(Color.argb(225, 255, 255, 255));
+            canvas.drawCircle(activeCursorX, activeCursorY, innerR * 0.42f, trailPaint);
         }
 
         borderPaint.setColor(draggingLock
@@ -362,11 +358,13 @@ public final class PadCanvasView extends View {
                 : (lightSurface ? Color.argb(75, 25, 35, 50) : Color.argb(75, 255, 255, 255)));
         canvas.drawRoundRect(bounds, rad, rad, borderPaint);
 
-        hintPaint.setTextSize(10.5f * dp);
-        hintPaint.setColor(lightSurface ? Color.argb(150, 55, 65, 80) : Color.argb(155, 185, 195, 210));
+        hintPaint.setTextSize(9.5f * getResources().getDisplayMetrics().scaledDensity);
+        hintPaint.setLetterSpacing(0.06f);
+        hintPaint.setTypeface(Type.MEDIUM);
+        hintPaint.setColor(lightSurface ? Color.argb(140, 55, 65, 80) : Color.argb(140, 190, 200, 214));
         String hint = draggingLock
-                ? "DRAG LOCKED · release to drop"
-                : "Tap: Click  ·  2-Finger: Right Click / Scroll";
+                ? "Drag locked · release to drop"
+                : "Tap to click · Two fingers to scroll";
         canvas.drawText(hint, w / 2f, h - 13 * dp, hintPaint);
     }
 

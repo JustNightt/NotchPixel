@@ -115,7 +115,7 @@ namespace OpenPixel.Services
         private static HttpClient CreateSharedHttpClient()
         {
             var client = new HttpClient { Timeout = TimeSpan.FromSeconds(6) };
-            try { client.DefaultRequestHeaders.UserAgent.ParseAdd("NotchPixel/0.5.126"); } catch { }
+            try { client.DefaultRequestHeaders.UserAgent.ParseAdd("OpenPixel/0.5.126"); } catch { }
             return client;
         }
 
@@ -188,9 +188,22 @@ namespace OpenPixel.Services
 
         // Every visible window the app owns (island, taskbar, start menu, settings)
         // must carry the same capture-exclusion affinity as the glass surface.
+        private static bool? _lastExcludeDecision;
+
         public static void ApplyCaptureAffinityToOwnedWindows(GlobalAppState state)
         {
             uint ownPid = (uint)Environment.ProcessId;
+
+            // The answer can flip while the process runs (the screenshot setting is
+            // toggled, or Snipping Tool starts and stops capturing), so every window
+            // gets told again whenever it does.
+            bool exclude = ShouldExcludeFromCapture(state);
+            if (_lastExcludeDecision != exclude)
+            {
+                _lastExcludeDecision = exclude;
+                _affinityApplied.Clear();
+            }
+
             Win32Layered.EnumWindows((hwnd, _) =>
             {
                 Win32Layered.GetWindowThreadProcessId(hwnd, out uint pid);
@@ -202,21 +215,64 @@ namespace OpenPixel.Services
             }, IntPtr.Zero);
         }
 
+        private static bool ShouldExcludeFromCapture(GlobalAppState state)
+        {
+            bool captureToolActive = IsScreenCaptureToolActive(state);
+            SkiaLiquidGlass.FreezeBackdropCapture = captureToolActive;
+            if (captureToolActive) return false;
+
+            lock (state.SyncRoot)
+            {
+                // Glass surfaces MUST exclude themselves from StretchBlt(GetDC(0)) screen
+                // capture so they never capture their own white rim / refraction in a
+                // recursive feedback loop. While a screen capture tool (Snipping Tool) is
+                // active above, we temporarily switch to WDA_NONE and freeze the cached
+                // glass backdrop so the island/settings can still be photographed cleanly.
+                bool isGlassTheme = !state.Settings.FallbackBlackOnGlassCrash &&
+                                    (state.Settings.Theme == SurfaceTheme.LiquidGlass ||
+                                     state.Settings.Theme == SurfaceTheme.CandyGlass ||
+                                     state.Settings.Theme == SurfaceTheme.Acrylic);
+                return state.Settings.HideFromScreenshots || isGlassTheme;
+            }
+        }
+
         public static void ApplyWindowCaptureAffinity(IntPtr hwnd, GlobalAppState state)
         {
             if (hwnd == IntPtr.Zero || !Win32Layered.IsWindow(hwnd)) return;
-            bool exclude;
+            bool exclude = ShouldExcludeFromCapture(state);
+            Win32Layered.SetWindowDisplayAffinity(hwnd, exclude ? Win32Layered.WDA_EXCLUDEFROMCAPTURE : Win32Layered.WDA_NONE);
+        }
+
+        // Screen capture tools draw a fullscreen overlay and grab the desktop. They
+        // must never be mistaken for a fullscreen app (that hid the notch mid-snip),
+        // and our own windows must stay capturable while they run.
+        public static bool IsScreenCaptureToolName(string appName)
+        {
+            if (string.IsNullOrWhiteSpace(appName)) return false;
+            string n = appName.ToLowerInvariant();
+            return n.Contains("snipping") || n.Contains("screensketch") ||
+                   n.Contains("screenclippinghost") || n.Contains("snip & sketch");
+        }
+
+        private static bool IsScreenCaptureToolActive(GlobalAppState state)
+        {
             lock (state.SyncRoot)
             {
-                // A crashed glass surface falls back to solid Black; that surface
-                // exposes no wallpaper content, so it must not be capture-excluded.
-                bool glassActive = !state.Settings.FallbackBlackOnGlassCrash &&
-                                   (state.Settings.Theme == SurfaceTheme.LiquidGlass ||
-                                    state.Settings.Theme == SurfaceTheme.CandyGlass ||
-                                    state.Settings.Theme == SurfaceTheme.Acrylic);
-                exclude = state.Settings.HideFromScreenshots || glassActive;
+                if (IsScreenCaptureToolName(state.Sensors.ScreenAppName)) return true;
             }
-            Win32Layered.SetWindowDisplayAffinity(hwnd, exclude ? Win32Layered.WDA_EXCLUDEFROMCAPTURE : Win32Layered.WDA_NONE);
+
+            IntPtr fg = Win32Layered.GetForegroundWindow();
+            if (fg == IntPtr.Zero) return false;
+            Win32Layered.GetWindowThreadProcessId(fg, out uint pid);
+            try
+            {
+                using var proc = Process.GetProcessById((int)pid);
+                return IsScreenCaptureToolName(proc.ProcessName);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         // ====================================================================
@@ -399,6 +455,9 @@ namespace OpenPixel.Services
             }
             if (inserted) NotifyUiWake();
         }
+
+        [DllImport("shell32.dll")]
+        private static extern int SHQueryUserNotificationState(out int pquns);
 
         [DllImport("user32.dll")]
         private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
@@ -2248,31 +2307,48 @@ namespace OpenPixel.Services
             if (fgWnd != IntPtr.Zero && Win32Layered.GetWindowRect(fgWnd, out var wrc))
             {
                 Rectangle scr = Screen.FromHandle(fgWnd)?.Bounds ?? Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-                if (wrc.left <= scr.Left && wrc.top <= scr.Top &&
-                    wrc.right >= scr.Right && wrc.bottom >= scr.Bottom)
+                Win32Layered.GetWindowThreadProcessId(fgWnd, out uint pid);
+                try
                 {
-                    Win32Layered.GetWindowThreadProcessId(fgWnd, out uint pid);
+                    using var proc = Process.GetProcessById((int)pid);
+                    fgExe = proc.ProcessName + ".exe";
+                }
+                catch { }
+
+                bool isExcludedShell =
+                    fgExe.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase) ||
+                    fgExe.Equals("OpenPixel.exe", StringComparison.OrdinalIgnoreCase) ||
+                    fgExe.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase) ||
+                    fgExe.Equals("ShellExperienceHost.exe", StringComparison.OrdinalIgnoreCase) ||
+                    IsScreenCaptureToolName(fgExe);
+
+                if (!isExcludedShell)
+                {
+                    bool coversFullMonitor =
+                        wrc.left <= scr.Left + 2 && wrc.top <= scr.Top + 2 &&
+                        wrc.right >= scr.Right - 2 && wrc.bottom >= scr.Bottom - 2;
+
+                    // Check Windows shell notification state (catches D3D fullscreen games,
+                    // F11 browser videos, and borderless fullscreen apps reliably).
+                    bool qunsFullscreen = false;
                     try
                     {
-                        using var proc = Process.GetProcessById((int)pid);
-                        fgExe = proc.ProcessName + ".exe";
+                        if (SHQueryUserNotificationState(out int qState) == 0 && (qState == 2 || qState == 3))
+                            qunsFullscreen = true;
                     }
                     catch { }
 
-                    if (!fgExe.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase) &&
-                        !fgExe.Equals("OpenPixel.exe", StringComparison.OrdinalIgnoreCase))
+                    // Also treat a full-monitor window as fullscreen if it is NOT zoomed,
+                    // OR if it is a borderless/F11 fullscreen window (no WS_CAPTION titlebar).
+                    const int GWL_STYLE = -16;
+                    const long WS_CAPTION = 0x00C00000L;
+                    long style = Win32Layered.GetWindowLongPtr(fgWnd, GWL_STYLE).ToInt64();
+                    bool hasCaption = (style & WS_CAPTION) == WS_CAPTION;
+                    bool zoomed = IsZoomed(fgWnd);
+
+                    if (qunsFullscreen || (coversFullMonitor && (!zoomed || !hasCaption)))
                     {
-                        lock (state.SyncRoot)
-                        {
-                            foreach (string allowed in state.Settings.GameRulesAllowList)
-                            {
-                                if (allowed.Equals(fgExe, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    isFullscreen = true;
-                                    break;
-                                }
-                            }
-                        }
+                        isFullscreen = true;
                     }
                 }
             }

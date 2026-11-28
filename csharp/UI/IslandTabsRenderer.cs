@@ -147,8 +147,15 @@ namespace OpenPixel.UI
                 ThemeSpec theme = state.CurrentTheme;
                 float notchFactor01 = Math.Clamp(state.NotchSpring.Value / 100.0f, 0.0f, 1.0f);
                 float openFactor01 = Math.Clamp(state.FadeSpring.Value / 100.0f, 0.0f, 1.0f);
+                // A collapsed island is one clean capsule: the notch ears flare out above it
+                // and the ambience dots land on the telemetry text, which reads as a second
+                // layer stacked on the idle line and on the fullscreen game strip.
+                bool collapsedShape = height < 16.0f ||
+                    (state.IsFullscreenGameActive && !state.IslandOpen && s.GameOverlayMasterEnabled &&
+                     s.GameOverlayMode == GameOverlayMode.SlimStrip);
 
-                using GraphicsPath path = r.CreateIslandOrNotchPath(left, top, width, height, radius, notchFactor01, s.Edge);
+                float shapeNotch = collapsedShape ? 0.0f : notchFactor01;
+                using GraphicsPath path = r.CreateIslandOrNotchPath(left, top, width, height, radius, shapeNotch, s.Edge);
                 Region prevClip = r.G.Clip;
                 r.G.SetClip(path, CombineMode.Replace);
 
@@ -157,8 +164,8 @@ namespace OpenPixel.UI
                 bool drewGlass = false;
                 if (s.Theme == SurfaceTheme.LiquidGlass || s.Theme == SurfaceTheme.CandyGlass || s.Theme == SurfaceTheme.Acrylic)
                 {
-                    float flare = (s.Edge == EdgePlacement.TopCenter && notchFactor01 > 0.5f)
-                        ? DipMetrics.FlareR * ((notchFactor01 - 0.5f) * 2.0f)
+                    float flare = (s.Edge == EdgePlacement.TopCenter && shapeNotch > 0.5f)
+                        ? DipMetrics.FlareR * ((shapeNotch - 0.5f) * 2.0f)
                         : 0.0f;
                     float glassL = left - flare;
                     float glassW = width + flare * 2.0f;
@@ -167,9 +174,23 @@ namespace OpenPixel.UI
                         windowScreenRect.Top + (int)(top * r.DpiScale),
                         Math.Max(16, (int)(glassW * r.DpiScale)),
                         Math.Max(4, (int)MathF.Ceiling(height * r.DpiScale)));
+                    // The resting pill animates continuously, so the expensive part —
+                    // sampling the desktop and running the glass lens — runs on a slower
+                    // clock than the shape itself. Open or hovered it refreshes ~18 fps
+                    // (live enough to read moving windows), closed it settles to ~4 fps.
+                    // Between refreshes the last lens is simply scaled into the new rect.
+                    bool liveGlass = state.IslandOpen || state.PointerInsideIsland;
+                    bool springsMoving = !state.OpenSpring.IsSettled(0.25f) ||
+                                         !state.FadeSpring.IsSettled(0.25f) ||
+                                         !state.CardHeightSpring.IsSettled(0.5f) ||
+                                         !state.PanelSpring.IsSettled(0.5f) ||
+                                         !state.SlimIdleSpring.IsSettled(0.5f);
+                    float glassRefreshMs = springsMoving ? 500.0f : (liveGlass ? 100.0f : 350.0f);
                     drewGlass = r.RenderLiquidGlassBackdrop(
                         subScreen, glassL, top, glassW, height,
-                        s.GlassBlurRadius, s.Theme, radius * r.DpiScale, flare * r.DpiScale);
+                        s.GlassBlurRadius, s.Theme, radius * r.DpiScale, flare * r.DpiScale,
+                        reuseWithoutCaptureMs: glassRefreshMs,
+                        minRefreshIntervalMs: glassRefreshMs);
                 }
 
                 if (!drewGlass)
@@ -198,10 +219,13 @@ namespace OpenPixel.UI
 
                 // 3. Soft Theme Ambience Particles (each side fades with the cross-fade)
                 float themeBlend = state.ThemeBlendProgress01;
-                if (themeBlend < 0.995f)
-                    r.RenderThemeAmbience(state.ThemeBlendFrom, left, top, width, height, timeSec, 1.0f - themeBlend);
-                if (themeBlend > 0.005f)
-                    r.RenderThemeAmbience(state.ThemeBlendTo, left, top, width, height, timeSec, themeBlend);
+                if (!collapsedShape)
+                {
+                    if (themeBlend < 0.995f)
+                        r.RenderThemeAmbience(state.ThemeBlendFrom, left, top, width, height, timeSec, 1.0f - themeBlend);
+                    if (themeBlend > 0.005f)
+                        r.RenderThemeAmbience(state.ThemeBlendTo, left, top, width, height, timeSec, themeBlend);
+                }
 
                 // 4. Resting Face when closed
                 float restingAlpha = Math.Clamp(1.0f - openFactor01 / 0.3f, 0.0f, 1.0f);
@@ -526,7 +550,7 @@ namespace OpenPixel.UI
                 return;
             }
 
-            // 4. Original NotchPixel Live Mic Pill: green mic icon + elapsed timer + green "Speak"
+            // 4. Original OpenPixel Live Mic Pill: green mic icon + elapsed timer + green "Speak"
             if (state.Sensors.MicActive || (!state.GlobalMicMuted && state.MicPeakSmoothed > 0.025f))
             {
                 if (state.Sensors.MicCallStartMs <= 0) state.Sensors.MicCallStartMs = ConfigManager.GetTickMs();
@@ -625,6 +649,13 @@ namespace OpenPixel.UI
                 for (int i = 0; i < 4; ++i)
                 {
                     float lvl = 0.0f;
+                    if (!playing && !s.ReduceMotion)
+                    {
+                        // Idle: a slow staggered breathing keeps the resting pill alive
+                        // without pretending any audio is playing.
+                        float breath = 0.5f + 0.5f * MathF.Sin(timeSec * 1.5f - i * 0.7f);
+                        lvl = 0.14f + 0.30f * breath;
+                    }
                     if (playing)
                     {
                         if (s.ReduceMotion)
@@ -648,7 +679,8 @@ namespace OpenPixel.UI
 
                     if (s.Visualizer == VisualizerStyle.Pixels)
                     {
-                        int count = playing ? Math.Clamp((int)MathF.Round(lvl * 4.0f), 1, 4) : 1;
+                        int count = playing ? Math.Clamp((int)MathF.Round(lvl * 4.0f), 1, 4)
+                                            : Math.Clamp((int)MathF.Round(lvl * 4.0f), 1, 2);
                         float bx = right - (4 - i) * 5.5f;
                         float bottom = cy + 8.25f;              // (4 * 4.5 - 1.5) / 2
                         for (int p = 0; p < count; ++p)
@@ -656,9 +688,10 @@ namespace OpenPixel.UI
                     }
                     else
                     {
-                        float bh = playing ? Math.Max(4.0f, 15.5f * lvl) : 3.0f;
+                        float bh = playing ? Math.Max(4.0f, 15.5f * lvl) : Math.Max(3.4f, 15.5f * lvl);
                         float bx = right - (4 - i) * 6.0f;
-                        float by = playing ? (cy - bh * 0.5f) : (cy + 5.25f);
+                        // While idle the bars breathe upward from the resting baseline.
+                        float by = playing ? (cy - bh * 0.5f) : (cy + 5.25f - (bh - 3.0f));
                         r.FillRoundedRect(new RectangleF(bx, by, 3.0f, bh), 1.5f, visCol);
                     }
                 }
@@ -902,9 +935,9 @@ namespace OpenPixel.UI
                         WindowsSystemHooks.ToggleMasterOutputMute(state, showPopup: false);
                     });
 
-                    // palette button in the corner: album colours behind the card, on or off
+                    // palette button in the top-right corner: album colors behind the card, on or off
                     bool albumBg = s.CardBackground == CardBackgroundMode.AlbumColours;
-                    float palX = L + 362.0f;                        // -L - 14 - 24
+                    float palX = left + width - 34.0f;
                     var palBtn = new RectangleF(palX, top + 7.0f, 24.0f, 24.0f);
                     float palHov = EaseHover(state, "m-pal", r.IsHovered(palBtn, state.PointerDipX, state.PointerDipY));
                     if (albumBg)
@@ -934,8 +967,8 @@ namespace OpenPixel.UI
                         ConfigManager.SaveAtomic(state);
                     });
 
-                    // lyrics stays, tucked to the left of the palette so the corner matches the demo
-                    var lyrBtn = new RectangleF(L + 332.0f, top + 7.0f, 24.0f, 24.0f);
+                    // lyrics button tucked neatly left of palette, well clear of the top tab bar's Settings gear
+                    var lyrBtn = new RectangleF(palX - 30.0f, top + 7.0f, 24.0f, 24.0f);
                     r.FillRoundedRect(lyrBtn, 8.0f, state.ShowLyricsInIsland ? theme.Accent : Color.FromArgb(26, 255, 255, 255));
                     r.DrawLucideIcon("message-circle", lyrBtn.X + 12.0f, lyrBtn.Y + 12.0f, 13.0f,
                         state.ShowLyricsInIsland ? ThemeSpec.AdaptiveInkForBackground(theme.Accent) : theme.TextPrimary);
@@ -1560,14 +1593,14 @@ namespace OpenPixel.UI
                 {
                     if (state.ShowRemindersInWidgets)
                     {
-                        // In-island Reminders manager synced with NotchPixel Deck
+                        // In-island Reminders manager synced with OpenPixel Deck
                         r.DrawTextStr("Reminders", new RectangleF(bodyLeft, bodyTop, 140, 22), 13.0f, true, theme.TextPrimary);
                         var addRemBtn = new RectangleF(bodyLeft + bodyW - 122, bodyTop, 56, 22);
                         r.FillRoundedRect(addRemBtn, 11, theme.TextPrimary);
                         r.DrawTextStr("+ Add", addRemBtn, 10.0f, true, ThemeSpec.AdaptiveInkForBackground(theme.TextPrimary), hAlign: StringAlignment.Center);
                         r.AddHitRegion("rem-add", addRemBtn, () =>
                         {
-                            string txt = TextPromptForm.Ask("New reminder", "What should NotchPixel remind you about?", "");
+                            string txt = TextPromptForm.Ask("New reminder", "What should OpenPixel remind you about?", "");
                             if (!string.IsNullOrWhiteSpace(txt))
                             {
                                 state.Reminders.Add(new ReminderItem
@@ -1588,7 +1621,7 @@ namespace OpenPixel.UI
                         {
                             var emptyBox = new RectangleF(bodyLeft, bodyTop + 34, bodyW, 92);
                             r.FillRoundedRect(emptyBox, 14, Color.FromArgb(18, 255, 255, 255));
-                            r.DrawTextStr("No reminders yet \u00B7 Synced with NotchPixel Deck", emptyBox, 11.0f, false, theme.TextMuted, hAlign: StringAlignment.Center);
+                            r.DrawTextStr("No reminders yet \u00B7 Synced with OpenPixel Deck", emptyBox, 11.0f, false, theme.TextMuted, hAlign: StringAlignment.Center);
                         }
                         else
                         {
@@ -1640,7 +1673,7 @@ namespace OpenPixel.UI
                         RenderIslandWidgetSlot(r, state, s, theme, chosen[idx], slots[idx], onToggleDesktopWidget);
                     }
 
-                    // Central floating reminder bell: opens Reminders view synced with NotchPixel Deck
+                    // Central floating reminder bell: opens Reminders view synced with OpenPixel Deck
                     float bellCx = bodyLeft + 184.0f;
                     float bellCy = bodyTop + 68.5f;
                     r.FillCircle(bellCx, bellCy, 21.5f, theme.IsLight ? Color.FromArgb(255, 236, 236, 238) : Color.FromArgb(255, 11, 11, 12));
@@ -1656,7 +1689,7 @@ namespace OpenPixel.UI
 
                 case PanelId.Controls:
                 {
-                    // Left: Tall vertical pill sliders for Brightness & Volume (NotchPixel layout)
+                    // Left: Tall vertical pill sliders for Brightness & Volume (OpenPixel layout)
                     float pillW = 50.0f;
                     float pillH = 122.0f;
                     float pillGap = 8.0f;
@@ -1826,7 +1859,7 @@ namespace OpenPixel.UI
                         new RectangleF(bodyLeft, bodyTop + 2.0f, bodyW, 22.0f), 13.0f, true, theme.TextPrimary);
                     r.DrawTextStr("A trackpad, music, apps, and modes for games and slides.",
                         new RectangleF(bodyLeft, bodyTop + 26.0f, bodyW, 18.0f), 10.6f, false, theme.TextMuted);
-                    r.DrawTextStr("With the free NotchPixel Deck app on your phone.",
+                    r.DrawTextStr("With the free OpenPixel Deck app on your phone.",
                         new RectangleF(bodyLeft, bodyTop + 44.0f, bodyW, 18.0f), 10.6f, false, theme.TextMuted);
                     string line3 = s.PcDeckEnabled
                         ? $"On \u00B7 {state.LocalPrivateIp}:{s.PcDeckTlsPort} \u00B7 Code {state.ActivePairingCode}"
@@ -2086,6 +2119,25 @@ namespace OpenPixel.UI
             LiquidGlassRenderer r, GlobalAppState state, AppSettings s, ThemeSpec theme,
             string widgetId, RectangleF t, Action<WidgetType> onToggleDesktopWidget)
         {
+            // Apply the Widgets color picker across all island widgets when customized
+            Color widgetPickerCol = Color.FromArgb(s.DayClockAccentColorArgb);
+            if (widgetPickerCol.A >= 30 && widgetPickerCol.ToArgb() != Color.White.ToArgb())
+            {
+                theme = new ThemeSpec
+                {
+                    Name = theme.Name,
+                    Fill = theme.Fill,
+                    Edge = theme.Edge,
+                    Accent = widgetPickerCol,
+                    TextPrimary = theme.IsLight ? theme.TextPrimary : widgetPickerCol,
+                    TextMuted = theme.TextMuted,
+                    TextFaint = theme.TextFaint,
+                    DefaultBar = theme.DefaultBar,
+                    IsGlass = theme.IsGlass,
+                    IsLight = theme.IsLight
+                };
+            }
+
             Color tileBg = theme.IsLight ? Color.FromArgb(26, 12, 12, 14) : Color.FromArgb(24, 255, 255, 255);
             r.FillRoundedRect(t, 14.0f, tileBg);
 
@@ -2094,11 +2146,12 @@ namespace OpenPixel.UI
             {
                 WidgetType mappedType = widgetId switch
                 {
+                    "dayclock" => WidgetType.DayClock,
                     "calendar" => WidgetType.Calendar,
                     "focus" => WidgetType.FocusTimer,
                     "weather" => WidgetType.MinimalWeather,
                     "stats" => WidgetType.PcStats,
-                    "clock" => WidgetType.DayClock,
+                    "clock" => WidgetType.WorldClock,
                     "todo" => WidgetType.TodoList,
                     "photos" => WidgetType.Photos,
                     "batteries" => WidgetType.Batteries,
@@ -2109,6 +2162,23 @@ namespace OpenPixel.UI
 
             switch (widgetId)
             {
+                case "dayclock":
+                {
+                    DateTime now = DateTime.Now;
+                    Color inkCol = Color.FromArgb(s.DayClockAccentColorArgb);
+                    if (inkCol.A < 30 || theme.IsLight) inkCol = theme.TextPrimary;
+                    string weekday = now.ToString("dddd", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
+                    string dateStr = now.ToString("dd MMMM, yyyy", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
+                    string timeStr = s.Use24HourClock
+                        ? now.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
+                        : now.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
+                    if (s.DayClockShowDashes) timeStr = $"- {timeStr} -";
+                    r.DrawTrackedText(weekday, new RectangleF(t.X + 8, t.Y + 8, t.Width - 16, 20), 11.5f, true, inkCol, 2.2f);
+                    r.DrawTextStr(dateStr, new RectangleF(t.X + 8, t.Y + 29, t.Width - 16, 15), 8.2f, false, theme.TextMuted, hAlign: StringAlignment.Center);
+                    r.DrawTextStr(timeStr, new RectangleF(t.X + 8, t.Y + 45, t.Width - 16, 15), 8.6f, true, inkCol, mono: true, hAlign: StringAlignment.Center);
+                    break;
+                }
+
                 case "calendar":
                 {
                     // Display-only Today widget: 27 FRI NOV, Week 48, 7-day strip.
@@ -2130,7 +2200,7 @@ namespace OpenPixel.UI
                         bool isToday = d == todayDow;
                         if (isToday)
                         {
-                            // Exact two-tone rounded capsule matching live NotchPixel Today widget
+                            // Exact two-tone rounded capsule matching live OpenPixel Today widget
                             var capRect = new RectangleF(dx + 1, t.Y + 31, colW - 2, 30);
                             r.FillRoundedRect(capRect, 8.0f, theme.IsLight ? Color.FromArgb(30, 12, 12, 14) : Color.FromArgb(46, 255, 255, 255));
                             var botHalf = new RectangleF(capRect.X, capRect.Y + 14.0f, capRect.Width, 16.0f);
@@ -2416,7 +2486,7 @@ namespace OpenPixel.UI
                 }
                 case OpenPixel.Core.ProgressBarStyle.SongShape:
                 {
-                    float[] bars = SongShapeBars(state.Media.HasSession ? state.Media.Title : "NotchPixel");
+                    float[] bars = SongShapeBars(state.Media.HasSession ? state.Media.Title : "OpenPixel");
                     int cnt = bars.Length;
                     float st = barWidth / cnt, bw = Math.Max(1.6f, st - 1.4f);
                     float reach = r.IsHovered(barBox, state.PointerDipX, state.PointerDipY) ? state.PointerDipX : -1.0f;

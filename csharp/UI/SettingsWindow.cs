@@ -10,7 +10,7 @@ using OpenPixel.Services;
 namespace OpenPixel.UI
 {
     // ========================================================================
-    // NotchPixel Settings - a calm, spacious menu:
+    // OpenPixel Settings - a calm, spacious menu:
     // - Inter typeface (bundled) with a single consistent type scale
     // - Animated navigation pill, hover fades, sliding segmented pills,
     //   springing toggle knobs, eased scrolling and a content fade/slide
@@ -62,17 +62,6 @@ namespace OpenPixel.UI
             ("ar",     "\u0627\u0644\u0639\u0631\u0628\u064A\u0629")
         };
 
-        private static readonly byte[,] PixelN =
-        {
-            { 1, 0, 0, 0, 0, 0, 1 },
-            { 1, 1, 0, 0, 0, 0, 1 },
-            { 1, 0, 1, 0, 0, 0, 1 },
-            { 1, 0, 0, 1, 0, 0, 1 },
-            { 1, 0, 0, 0, 1, 0, 1 },
-            { 1, 0, 0, 0, 0, 2, 1 },
-            { 1, 0, 0, 0, 0, 0, 1 }
-        };
-
         private static string AppVersionString
         {
             get
@@ -97,7 +86,7 @@ namespace OpenPixel.UI
         private int _dragOffX, _dragOffY;
 
         private readonly System.Windows.Forms.Timer _saveTimer = new() { Interval = 350 };
-        private readonly System.Windows.Forms.Timer _animTimer = new() { Interval = 15 };
+        private readonly System.Windows.Forms.Timer _animTimer = new() { Interval = 10 };
         private long _lastAnimMs;
         private bool _savePending = false;
         private bool _rendering = false;
@@ -169,10 +158,10 @@ namespace OpenPixel.UI
             _onSettingsChanged = onSettingsChanged;
             _onOpenIslandPreview = onOpenIslandPreview;
             _onOpenOnboarding = onOpenOnboarding;
-            Text = "NotchPixel Settings";
+            Text = "OpenPixel Settings";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = true;
-            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? ""); } catch { }
+            try { Icon = BrandLogo.WindowIcon() ?? System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? ""); } catch { }
             TopMost = false;
             KeyPreview = true;
             StartPosition = FormStartPosition.Manual;
@@ -663,9 +652,11 @@ namespace OpenPixel.UI
                     _renderer.G.SetClip(gp, CombineMode.Replace);
                     // Settings uses a clean frosted blur background (NO LiquidGlass refraction or edge glow).
                     // Candy glass gets a soft pinkish frosted blur; LiquidGlass/Acrylic get a clean dark blur.
+                    // The tint carries the same weight as the island glass scrim (0.76-0.9)
+                    // so white type stays legible whatever is behind the panel.
                     Color blurTint = s.Theme == SurfaceTheme.CandyGlass
-                        ? Color.FromArgb(162, 58, 18, 46)
-                        : (s.Theme == SurfaceTheme.Acrylic ? Color.FromArgb(178, 16, 16, 20) : Color.FromArgb(168, 11, 12, 15));
+                        ? Color.FromArgb(196, 48, 15, 39)
+                        : (s.Theme == SurfaceTheme.Acrylic ? Color.FromArgb(206, 15, 15, 19) : Color.FromArgb(198, 10, 11, 14));
                     drewSettingsBlur = _renderer.RenderBlurBackdrop(Bounds, 0, 0, LW, LH, MathF.Max(18.0f, s.GlassBlurRadius), blurTint);
                     _renderer.G.Clip = prevC;
                 }
@@ -680,11 +671,37 @@ namespace OpenPixel.UI
                         _renderer.G.FillPath(candyGlow, gp);
                     }
                 }
+                if (drewSettingsBlur)
+                {
+                    // Depth on the frosted panel: a soft top highlight falling into a
+                    // gentle bottom shade reads as glass instead of a flat dark sheet,
+                    // and the inner hairline gives the edge the same lit rim the island has.
+                    using (var sheen = new LinearGradientBrush(
+                        new RectangleF(frame.X, frame.Y, frame.Width, frame.Height),
+                        Color.Transparent, Color.Transparent, 90.0f))
+                    {
+                        sheen.InterpolationColors = new ColorBlend(3)
+                        {
+                            Colors = new[]
+                            {
+                                Color.FromArgb(30, 255, 255, 255),
+                                Color.FromArgb(0, 255, 255, 255),
+                                Color.FromArgb(40, 0, 0, 0)
+                            },
+                            Positions = new[] { 0.0f, 0.42f, 1.0f }
+                        };
+                        using var sheenPath = CreateRoundedPath(frame, 12);
+                        _renderer.G.FillPath(sheen, sheenPath);
+                    }
+                    _renderer.DrawRoundedRect(
+                        new RectangleF(frame.X + 1, frame.Y + 1, frame.Width - 2, frame.Height - 2), 11,
+                        Color.FromArgb(26, 255, 255, 255), 1.0f);
+                }
                 _renderer.DrawRoundedRect(frame, 12, outerEdge, 1.0f);
 
-                // Top chrome bar: small square N badge + bold NotchPixel + mono version + close X
+                // Top chrome bar: brand mark badge + bold OpenPixel + mono version + close X
                 DrawTopBarBadge(new RectangleF(18, 12, 22, 22));
-                _renderer.DrawTextStr("NotchPixel", new RectangleF(48, 10, 96, 26), 13.0f, true, Color.FromArgb(255, 245, 245, 247));
+                _renderer.DrawTextStr("OpenPixel", new RectangleF(48, 10, 96, 26), 13.0f, true, Color.FromArgb(255, 245, 245, 247));
                 _renderer.DrawTextStr(AppVersionString, new RectangleF(134, 12, 92, 24), 9.0f, false, Color.FromArgb(255, 120, 120, 126), mono: true);
 
                 var closeBtn = new RectangleF(LW - 38, 10, 26, 26);
@@ -820,7 +837,15 @@ namespace OpenPixel.UI
                                 s.NotchAutoHide = !s.NotchAutoHide;
                                 NotifyChanged();
                             });
-                        float surfaceH = CardHeight(SegH, SliderH, SliderH, SliderH, SegH, HairH, SegH, SegH, SegH, SegH, HairH, SliderH, SliderH);
+                        // The card has to measure every row it actually draws. The old list
+                        // stopped at the sliders, so the divider landed in the middle of the
+                        // font picker and everything below it overlapped (~195 px squashed).
+                        float surfaceH = CardHeight(
+                            SegH, SliderH, SliderH, SliderH, SegH, HairH,   // shape, sizes, motion
+                            22.0f, 46.0f, 82.0f,                           // Surface title, copy, theme pills
+                            SliderH, SegH,                                 // glass blur, accent palette
+                            24.0f, 38.0f, 78.0f,                           // Font title, copy, font pills
+                            SegH, HairH, SliderH);                         // card background, corners
                         Card(py, surfaceH, paneX, paneW, cardBg, hairline);
                         float cy = py + 14.0f;
                         Segmented("Shape", "Floating island or notch joined to the screen edge", paneX + 16, ref cy, paneW - 32,
@@ -926,7 +951,7 @@ namespace OpenPixel.UI
                         _renderer.DrawTextStr("Font", new RectangleF(paneX + 16, cy + 4, paneW - 32, 20), 11.4f, true, contentTheme.TextPrimary);
                         cy += 24.0f;
                         _renderer.DrawTextStr(
-                            "The letters the island, the taskbar and this window write in. Every one writes all of NotchPixel's languages; numbers keep their own even-width font.",
+                            "The letters the island, the taskbar and this window write in. Every one writes all of OpenPixel's languages; numbers keep their own even-width font.",
                             new RectangleF(paneX + 16, cy, paneW - 32, 34), 9.4f, false, contentTheme.TextMuted, noWrap: false);
                         cy += 38.0f;
                         var fontBox = new RectangleF(paneX + 16, cy, Math.Min(paneW - 32, 360.0f), 68.0f);
@@ -956,7 +981,7 @@ namespace OpenPixel.UI
                             });
                         cy += 78.0f;
 
-                        Segmented("Card background", "Use album colours or a plain surface", paneX + 16, ref cy, paneW - 32,
+                        Segmented("Card background", "Use album colors or a plain surface", paneX + 16, ref cy, paneW - 32,
                             new[] { "Album art", "Plain" }, (int)s.CardBackground, "cardbackground", contentTheme,
                             idx => { s.CardBackground = (CardBackgroundMode)idx; NotifyChanged(); });
                         Hairline(paneX + 16, cy, paneW - 32, hairline, contentTheme); cy += HairH;
@@ -968,7 +993,7 @@ namespace OpenPixel.UI
                         });
                         py += surfaceH + 20.0f;
 
-                        ToggleCard("Sync UI colours to playing audio", "Tints buttons, accents, and sub-colours to match your current song", paneX, ref py, paneW,
+                        ToggleCard("Sync UI colors to playing audio", "Tints buttons, accents, and sub-colors to match your current song", paneX, ref py, paneW,
                             s.SyncThemeToAudioColor, "syncaudiocol", cardBg, hairline, contentTheme,
                             () => { s.SyncThemeToAudioColor = !s.SyncThemeToAudioColor; NotifyChanged(); });
 
@@ -1051,7 +1076,7 @@ namespace OpenPixel.UI
                         Section("GENERAL", paneX, ref py, contentTheme);
                         FlatToggleRow(
                             "Run at startup",
-                            "Start NotchPixel when you sign in to Windows.",
+                            "Start OpenPixel when you sign in to Windows.",
                             paneX, ref py, paneW, s.LaunchAtStartup, "startup", contentTheme, 58.0f, true,
                             () =>
                             {
@@ -1112,7 +1137,7 @@ namespace OpenPixel.UI
 
                         FlatToggleRow(
                             "Draw with the processor",
-                            "If a black box shows around the island, or it flickers, your graphics card's driver is the likely cause: the processor draws NotchPixel instead. It uses a little more of the processor. Takes effect the next time NotchPixel starts (quit it from the tray and open it again).",
+                            "If a black box shows around the island, or it flickers, your graphics card's driver is the likely cause: the processor draws OpenPixel instead. It uses a little more of the processor. Takes effect the next time OpenPixel starts (quit it from the tray and open it again).",
                             paneX, ref py, paneW, s.DrawWithProcessor, "cpu", contentTheme, 96.0f, true,
                             () => { s.DrawWithProcessor = !s.DrawWithProcessor; NotifyChanged(); });
                         break;
@@ -1122,8 +1147,8 @@ namespace OpenPixel.UI
                     {
                         Section("NOTCHPIXEL TASKBAR", paneX, ref py, contentTheme);
                         FlatToggleRow(
-                            "NotchPixel taskbar",
-                            "A notch along the bottom of your main screen in place of Windows' taskbar, in the island's look: Start, your pinned and open apps, the song playing and the timer, the tray, quick settings and the clock. Right-click an app to pin it. Windows' taskbar comes back as it was when you turn this off or NotchPixel closes.",
+                            "OpenPixel taskbar",
+                            "A notch along the bottom of your main screen in place of Windows' taskbar, in the island's look: Start, your pinned and open apps, the song playing and the timer, the tray, quick settings and the clock. Right-click an app to pin it. Windows' taskbar comes back as it was when you turn this off or OpenPixel closes.",
                             paneX, ref py, paneW, s.BottomTaskbarEnabled, "tb-master", contentTheme, 108.0f, true,
                             () =>
                             {
@@ -1157,7 +1182,7 @@ namespace OpenPixel.UI
 
                         FlatToggleRow(
                             "Hide over maximized windows",
-                            "Maximized windows get the whole screen, and NotchPixel's taskbar steps aside while one is in front. Push the pointer to the bottom edge to bring it back. Off, windows stop above the taskbar.",
+                            "Maximized windows get the whole screen, and OpenPixel's taskbar steps aside while one is in front. Push the pointer to the bottom edge to bring it back. Off, windows stop above the taskbar.",
                             paneX, ref py, paneW, s.TaskbarAutoHideMaximized, "tb-autohide", contentTheme, 82.0f, tbOn,
                             () =>
                             {
@@ -1179,7 +1204,7 @@ namespace OpenPixel.UI
 
                         FlatToggleRow(
                             "Windows key + number opens the taskbar's apps",
-                            "Win+1 to Win+9, and Win+0, bring forward the app at that place on NotchPixel's taskbar.",
+                            "Win+1 to Win+9, and Win+0, bring forward the app at that place on OpenPixel's taskbar.",
                             paneX, ref py, paneW, s.TaskbarWinNumberHotkeys, "tb-winnum", contentTheme, 68.0f, tbOn,
                             () =>
                             {
@@ -1243,7 +1268,7 @@ namespace OpenPixel.UI
                         bool dayClockPinned = AuxiliaryWindows.IsDesktopWidgetPinned(_state, WidgetType.DayClock);
                         FlatToggleRow(
                             "Day clock on the desktop",
-                            "The day, date and time in big spaced letters on your wallpaper, with nothing behind them. Drag it to move it; scroll on it or right-click it to resize it and change its colour.",
+                            "The day, date and time in big spaced letters on your wallpaper, with nothing behind them. Drag it to move it; scroll on it or right-click it to resize it and change its color.",
                             paneX, ref py, paneW, dayClockPinned, "dayclock-on", contentTheme, 82.0f, true,
                             () =>
                             {
@@ -1251,6 +1276,13 @@ namespace OpenPixel.UI
                                 AuxiliaryWindows.ApplyDayClockSettings(_state);
                                 NotifyChanged();
                             });
+
+                        // Live Custom Date / Day Clock preview banner
+                        var dcPreview = new RectangleF(paneX, py, paneW, 84.0f);
+                        _renderer.FillRoundedRect(dcPreview, 12, Color.FromArgb(255, 16, 16, 20));
+                        _renderer.DrawRoundedRect(dcPreview, 12, Color.FromArgb(255, 42, 42, 48), 1.0f);
+                        DrawWidgetPreviewMockup("dayclock", dcPreview, s);
+                        py += 94.0f;
 
                         // Size slider (50% - 200%, default 100%)
                         int dcScale = Math.Clamp(s.DayClockScalePercent, 50, 200);
@@ -1342,11 +1374,11 @@ namespace OpenPixel.UI
                             py += 36.0f;
                         }
 
-                        Section("COLOURS", paneX, ref py, contentTheme);
+                        Section("COLORS", paneX, ref py, contentTheme);
                         float hueDeg = Math.Clamp(s.WallpaperHue, -180.0f, 180.0f);
                         FlatSliderRow(
                             "Hue",
-                            "Turns every colour of the video around the colour wheel: 180 makes blue orange.",
+                            "Turns every color of the video around the color wheel: 180 makes blue orange.",
                             $"{(int)MathF.Round(hueDeg)}\u00B0",
                             paneX, ref py, paneW, (hueDeg + 180.0f) / 360.0f, "wp-hue", contentTheme, n =>
                             {
@@ -1358,7 +1390,7 @@ namespace OpenPixel.UI
                         float satPct = Math.Clamp(s.WallpaperSaturation, 0.0f, 200.0f);
                         FlatSliderRow(
                             "Saturation",
-                            "Less colour to the left, more to the right. 100 is the video as it was made.",
+                            "Less color to the left, more to the right. 100 is the video as it was made.",
                             $"{(int)MathF.Round(satPct)}%",
                             paneX, ref py, paneW, satPct / 200.0f, "wp-sat", contentTheme, n =>
                             {
@@ -1425,7 +1457,7 @@ namespace OpenPixel.UI
                     case SettingsCategory.Gaming:
                     {
                         Section("FULLSCREEN GAME OVERLAY", paneX, ref py, contentTheme);
-                        ToggleCard("Enable game overlay", "Off hides NotchPixel completely in fullscreen games", paneX, ref py, paneW,
+                        ToggleCard("Enable game overlay", "Off hides OpenPixel completely in fullscreen games", paneX, ref py, paneW,
                             s.GameOverlayMasterEnabled, "overlay", cardBg, hairline, contentTheme, () =>
                             {
                                 s.GameOverlayMasterEnabled = !s.GameOverlayMasterEnabled;
@@ -1499,7 +1531,7 @@ namespace OpenPixel.UI
                             float deckTextW = paneW - 196;
                             _renderer.DrawTextStr($"Pairing code \u00B7 2 min", new RectangleF(deckTextX, py + 16, deckTextW, 16), 9.0f, true, contentTheme.TextFaint, mono: true);
                             _renderer.DrawTextStr(_state.ActivePairingCode, new RectangleF(deckTextX, py + 32, deckTextW, 30), 19.0f, true, contentTheme.Accent, mono: true);
-                            _renderer.DrawTextStr("Scan with NotchPixel Deck on the same Wi-Fi", new RectangleF(deckTextX, py + 64, deckTextW, 18), 10.0f, false, contentTheme.TextMuted);
+                            _renderer.DrawTextStr("Scan with OpenPixel Deck on the same Wi-Fi", new RectangleF(deckTextX, py + 64, deckTextW, 18), 10.0f, false, contentTheme.TextMuted);
                             _renderer.DrawTextStr($"TLS pinned \u00B7 {_state.PairedDeckDevices.Count} phone(s)", new RectangleF(deckTextX, py + 82, deckTextW, 18), 9.5f, false, contentTheme.TextFaint);
 
                             SmallButton("New code", deckTextX, py + 106, 96, contentTheme, () =>
@@ -1574,7 +1606,7 @@ namespace OpenPixel.UI
                         py += 8.0f;
 
                         Section("TASKBAR & WALLPAPER", paneX, ref py, contentTheme);
-                        ToggleCard("NotchPixel bottom taskbar", "Start, pinned apps, tray icons and clock", paneX, ref py, paneW,
+                        ToggleCard("OpenPixel bottom taskbar", "Start, pinned apps, tray icons and clock", paneX, ref py, paneW,
                             s.BottomTaskbarEnabled, "taskbar", cardBg, hairline, contentTheme, () =>
                             {
                                 s.BottomTaskbarEnabled = !s.BottomTaskbarEnabled;
@@ -1648,7 +1680,7 @@ namespace OpenPixel.UI
                             "Mute microphone",
                             "Hide / show island",
                             "Screenshot",
-                            "Screen colour picker"
+                            "Screen color picker"
                         };
                         float keysH = CardHeight(20.0f, labels.Length * 42.0f + 38.0f);
                         Card(py, keysH, paneX, paneW, cardBg2, hairline);
@@ -1684,9 +1716,9 @@ namespace OpenPixel.UI
                         float aboutH = CardHeight(26.0f, 56.0f, 42.0f);
                         Card(py, aboutH, paneX, paneW, cardBg, hairline);
                         float cy = py + 16.0f;
-                        _renderer.DrawTextStr("NotchPixel for Windows 10 & 11", new RectangleF(paneX + 16, cy, paneW - 32, 24), 13.0f, true, contentTheme.TextPrimary);
+                        _renderer.DrawTextStr("OpenPixel for Windows 10 & 11", new RectangleF(paneX + 16, cy, paneW - 32, 24), 13.0f, true, contentTheme.TextPrimary);
                         cy += 26.0f;
-                        _renderer.DrawTextStr("Zero accounts, zero telemetry, zero ads. Inter typeface by Rasmus Andersson (OFL).\nAndroid companion: NotchPixel Deck.", new RectangleF(paneX + 16, cy, paneW - 32, 44), 10.5f, false, contentTheme.TextMuted, noWrap: false);
+                        _renderer.DrawTextStr("Zero accounts, zero telemetry, zero ads. Inter typeface by Rasmus Andersson (OFL).\nAndroid companion: OpenPixel Deck.", new RectangleF(paneX + 16, cy, paneW - 32, 44), 10.5f, false, contentTheme.TextMuted, noWrap: false);
                         cy += 56.0f;
                         AccentButton("Save diagnostic report", paneX + 16, cy, 200, contentTheme, () =>
                         {
@@ -1741,7 +1773,7 @@ namespace OpenPixel.UI
 
         private void RenderAppearancePreview(float x, float w, float y, ThemeSpec theme, AppSettings settings)
         {
-            // Deep navy-to-violet wallpaper backdrop matching NotchPixel Settings preview (step_160_shot_1 & step_94_shot_2)
+            // Deep navy-to-violet wallpaper backdrop matching OpenPixel Settings preview (step_160_shot_1 & step_94_shot_2)
             var banner = new RectangleF(x, y, w, 128.0f);
             using (var bGrad = new LinearGradientBrush(banner, Color.FromArgb(255, 24, 48, 98), Color.FromArgb(255, 86, 30, 94), 16.0f))
             {
@@ -1895,7 +1927,7 @@ namespace OpenPixel.UI
         private void AccentPalette(float x, ref float y, float w, ThemeSpec theme, int selectedArgb, Action<int> onSelect)
         {
             _renderer.DrawTextStr("Accent", new RectangleF(x, y + 2, 160, 20), 11.5f, true, theme.TextPrimary);
-            _renderer.DrawTextStr("Highlight colour across the island", new RectangleF(x, y + 20, 180, 14), 9.0f, false, theme.TextFaint);
+            _renderer.DrawTextStr("Highlight color across the island", new RectangleF(x, y + 20, 180, 14), 9.0f, false, theme.TextFaint);
 
             float left = x + 190.0f;
             var themeChip = new RectangleF(left, y + 4, 38, 24);
@@ -2052,7 +2084,8 @@ namespace OpenPixel.UI
             _wheelRect = new RectangleF(wheelX, wheelY, wheelSize, wheelSize);
 
             float leftW = Math.Max(140.0f, wheelX - x - 24.0f);
-            _renderer.DrawTextStr("Colour", new RectangleF(x, wheelY + 52.0f, leftW, 20), 11.2f, true, Color.FromArgb(255, 245, 245, 247));
+            _renderer.DrawTextStr("Widget color", new RectangleF(x, wheelY + 46.0f, leftW, 20), 11.2f, true, Color.FromArgb(255, 245, 245, 247));
+            _renderer.DrawTextStr("Applies to all widgets", new RectangleF(x, wheelY + 66.0f, leftW, 16), 8.6f, false, Color.FromArgb(255, 142, 142, 148));
             _renderer.DrawTextStr(
                 "Pick anywhere on the wheel. The middle is white; the bar under it goes from black to full brightness.",
                 new RectangleF(x, wheelY + 74.0f, leftW, 50), 9.5f, false, Color.FromArgb(255, 152, 152, 158), noWrap: false);
@@ -2104,6 +2137,7 @@ namespace OpenPixel.UI
             s.IslandWidgets ??= new List<string> { "calendar", "focus", "weather", "stats" };
             (string Id, string Title, string Desc, WidgetType? DesktopType)[] cards =
             {
+                ("dayclock",   "Custom date",  "Spaced weekday, date and time on desktop or island.", WidgetType.DayClock),
                 ("calendar",   "Today",        "The date and current week.",                       WidgetType.Calendar),
                 ("focus",      "Focus timer",  "A Pomodoro timer you start on the island.",        WidgetType.FocusTimer),
                 ("weather",    "Weather",      "Now, and today's high and low.",                   WidgetType.MinimalWeather),
@@ -2259,11 +2293,30 @@ namespace OpenPixel.UI
 
         private void DrawWidgetPreviewMockup(string id, RectangleF r, AppSettings s)
         {
-            Color white = Color.FromArgb(255, 245, 245, 247);
+            Color picker = Color.FromArgb(s.DayClockAccentColorArgb);
+            Color white = (picker.A >= 30 && picker.ToArgb() != Color.White.ToArgb())
+                ? picker
+                : Color.FromArgb(255, 245, 245, 247);
             Color muted = Color.FromArgb(255, 148, 148, 154);
 
             switch (id)
             {
+                case "dayclock":
+                {
+                    DateTime now = DateTime.Now;
+                    Color dcCol = Color.FromArgb(s.DayClockAccentColorArgb);
+                    if (dcCol.A < 30) dcCol = white;
+                    string weekday = now.ToString("dddd", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
+                    string dateStr = now.ToString("dd MMMM, yyyy.", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
+                    string timeStr = s.Use24HourClock
+                        ? now.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
+                        : now.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
+                    if (s.DayClockShowDashes) timeStr = $"- {timeStr} -";
+                    _renderer.DrawTrackedText(weekday, new RectangleF(r.X + 8, r.Y + 14, r.Width - 16, 24), 13.0f, true, dcCol, 3.0f);
+                    _renderer.DrawTextStr(dateStr, new RectangleF(r.X + 8, r.Y + 41, r.Width - 16, 16), 8.6f, false, muted, hAlign: StringAlignment.Center);
+                    _renderer.DrawTextStr(timeStr, new RectangleF(r.X + 8, r.Y + 58, r.Width - 16, 16), 8.8f, true, dcCol, mono: true, hAlign: StringAlignment.Center);
+                    break;
+                }
                 case "calendar":
                 {
                     DateTime now = DateTime.Now;
@@ -2510,18 +2563,7 @@ namespace OpenPixel.UI
         {
             _renderer.FillRoundedRect(rect, 5, Color.FromArgb(255, 24, 24, 27));
             _renderer.DrawRoundedRect(rect, 5, Color.FromArgb(255, 44, 44, 49), 1.0f);
-            float cell = 1.25f;
-            float startX = rect.X + (rect.Width - 7 * cell) * 0.5f;
-            float startY = rect.Y + (rect.Height - 7 * cell) * 0.5f;
-            var prev = _renderer.G.SmoothingMode;
-            _renderer.G.SmoothingMode = SmoothingMode.None;
-            using var wb = new SolidBrush(Color.FromArgb(255, 240, 240, 244));
-            using var ab = new SolidBrush(Color.FromArgb(255, 120, 214, 255));
-            for (int r = 0; r < 7; ++r)
-                for (int c = 0; c < 7; ++c)
-                    if (PixelN[r, c] != 0)
-                        _renderer.G.FillRectangle(PixelN[r, c] == 2 ? ab : wb, startX + c * cell, startY + r * cell, cell, cell);
-            _renderer.G.SmoothingMode = prev;
+            BrandLogo.Draw(_renderer.G, RectangleF.Inflate(rect, -2.5f, -2.5f));
         }
 
         private void DrawCloseGlyph(RectangleF rect, Color color)
@@ -2596,7 +2638,7 @@ namespace OpenPixel.UI
 
         private void Card(float y, float h, float x, float w, Color bg, Color border)
         {
-            // Flat borderless section layout matching NotchPixel Settings (step_160_shot_1)
+            // Flat borderless section layout matching OpenPixel Settings (step_160_shot_1)
             if (h <= 2.0f) return;
             _renderer.DrawLine(x, y + h, x + w, y + h, Color.FromArgb(24, 255, 255, 255), 1.0f);
         }
@@ -2676,7 +2718,7 @@ namespace OpenPixel.UI
             _renderer.FillCircle(knobX + knobD * 0.5f, y + h * 0.5f, knobD * 0.5f, knobCol);
         }
 
-        // Liquid Glass Slider (NotchPixel white track + Kyant0/AndroidLiquidGlass capsule glass thumb & pressed halo)
+        // Liquid Glass Slider (OpenPixel white track + Kyant0/AndroidLiquidGlass capsule glass thumb & pressed halo)
         private void Slider(string label, string value, float x, ref float y, float w, float norm01, string key,
             ThemeSpec theme, Action<float> onSlide)
         {
@@ -2854,16 +2896,17 @@ namespace OpenPixel.UI
                 Location = new Point(pt.X - _dragOffX, pt.Y - _dragOffY);
                 return;
             }
+            long now = Environment.TickCount64;
             if (_draggingWheel)
             {
                 UpdateWheelFromPoint(lx, ly);
-                RenderNow();
+                if (now - _lastHoverPaintMs >= 16) { _lastHoverPaintMs = now; RenderNow(); }
                 return;
             }
             if (_draggingValBar)
             {
                 UpdateValBarFromPoint(lx);
-                RenderNow();
+                if (now - _lastHoverPaintMs >= 16) { _lastHoverPaintMs = now; RenderNow(); }
                 return;
             }
             bool draggingControl = (e.Button & MouseButtons.Left) != 0;
@@ -2871,15 +2914,25 @@ namespace OpenPixel.UI
             {
                 try { _renderer.DispatchDrag(lx, ly); }
                 catch { }
+                if (now - _lastHoverPaintMs >= 16)
+                {
+                    _lastHoverPaintMs = now;
+                    _lastAnimMs = now;
+                    if (!_animTimer.Enabled) _animTimer.Start();
+                    RenderNow();
+                }
+                return;
             }
-            long now = Environment.TickCount64;
-            int minInterval = draggingControl ? 12 : 16;
-            if (now - _lastHoverPaintMs >= minInterval)
+            // Hover only: let the 60fps animation timer drive smooth hover easing
+            // instead of double-rendering synchronously on every mouse move event.
+            if (now - _lastHoverPaintMs >= 32)
             {
                 _lastHoverPaintMs = now;
-                _lastAnimMs = now;
-                if (!_animTimer.Enabled) _animTimer.Start();
-                RenderNow();
+                if (!_animTimer.Enabled)
+                {
+                    _lastAnimMs = now;
+                    _animTimer.Start();
+                }
             }
         }
 

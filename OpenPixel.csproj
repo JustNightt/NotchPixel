@@ -14,6 +14,9 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <NoWarn>CA1416;WFO1000</NoWarn>
+    <!-- The brand mark on the taskbar, window and Explorer icon. Without this the
+         app inherits the generic .NET icon, which shows as a blank white square. -->
+    <ApplicationIcon>assets\brand\OpenPixel.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,6 +27,9 @@
     <!-- Inter ships inside the assembly so the UI font never depends on the PC. -->
     <EmbeddedResource Include="assets\island\*.png">
       <LogicalName>OpenPixel.Island.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="assets\brand\OpenPixel.ico">
+      <LogicalName>OpenPixel.Brand.OpenPixel.ico</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="assets\fonts\*.ttf">
       <LogicalName>OpenPixel.Fonts.%(Filename)%(Extension)</LogicalName>

@@ -9,7 +9,7 @@ using System.Runtime.InteropServices;
 namespace OpenPixel.Rendering
 {
     // ========================================================================
-    // Unified Typography for NotchPixel:
+    // Unified Typography for OpenPixel:
     // - All 6 selectable fonts are embedded directly inside the assembly:
     //   0: Geist (main default), 1: Inter, 2: Roboto, 3: Noto Sans, 4: Manrope, 5: Nunito
     // - Mono / tabular numbers always use embedded GeistMono-Medium / Regular.

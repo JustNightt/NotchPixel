@@ -1,8 +1,8 @@
-# NotchPixel / OpenPixel — Project Guide
+# OpenPixel / OpenPixel — Project Guide
 
 ## What this repository is
 
-A Windows desktop companion app ("OpenPixel", UI name NotchPixel): a notched
+A Windows desktop companion app ("OpenPixel", UI name OpenPixel): a notched
 Dynamic-Island-style pill, a custom bottom taskbar, desktop widgets, an optional
 live video wallpaper, and an Android "deck" remote that talks to the PC over a
 pinned TLS connection.

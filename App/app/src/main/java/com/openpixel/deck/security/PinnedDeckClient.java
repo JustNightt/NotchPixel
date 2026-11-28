@@ -111,7 +111,7 @@ public final class PinnedDeckClient {
         public String accentHex = "#2BE4EA";
         public String albumArtB64 = "";
         public int audioLevel = 0;
-        // Synced from Windows NotchPixel theme
+        // Synced from the Windows OpenPixel theme
         public String themeName = "LiquidGlass";
         public boolean themeIsLight = false;
         public boolean themeIsGlass = true;

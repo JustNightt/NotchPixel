@@ -4,59 +4,74 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.RectF;
+import android.os.SystemClock;
 import android.view.View;
 
 /**
- * Liquid-fill telemetry stat card for CPU, GPU, and RAM (shows real temp only when reported).
+ * Telemetry card: a large tabular value, its label, an optional temperature and
+ * a thin accent meter along the bottom edge.
+ *
+ * <p>The reading eases to its new value over a few frames and then stops drawing
+ * entirely, so an idle deck costs no frames.</p>
  */
 public final class LiquidStatCardView extends View {
+
     private final String metricTitle;
     private final int accentColor;
+
+    private final Paint cardPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint meterTrackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint meterFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint titlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint valuePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint unitPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint captionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF cardRect = new RectF();
+    private final RectF meterRect = new RectF();
+
     private int targetPercent = 0;
     private float displayPercent = 0f;
     private boolean tempAvailable = false;
     private int tempC = 0;
     private boolean lightSurface = false;
-    private float wavePhase = 0f;
     private long lastFrameMs = 0L;
-
-    private final Paint cardPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint liquidPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint liquidCrestPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint titlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint valuePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint tempPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final RectF cardRect = new RectF();
-    private final Path clipPath = new Path();
-    private final Path wavePath = new Path();
-    private final Path crestPath = new Path();
 
     public LiquidStatCardView(Context ctx, String title, int accentColor) {
         super(ctx);
         this.metricTitle = title;
         this.accentColor = accentColor;
-        borderPaint.setStyle(Paint.Style.STROKE);
-        borderPaint.setStrokeWidth(ctx.getResources().getDisplayMetrics().density * 1f);
-        titlePaint.setFakeBoldText(true);
-        valuePaint.setFakeBoldText(true);
+        rimPaint.setStyle(Paint.Style.STROKE);
+        rimPaint.setStrokeWidth(ctx.getResources().getDisplayMetrics().density);
+        titlePaint.setTypeface(Type.MEDIUM);
+        titlePaint.setLetterSpacing(0.09f);
+        valuePaint.setTypeface(Type.MEDIUM);
+        valuePaint.setLetterSpacing(-0.03f);
+        valuePaint.setFontFeatureSettings("'tnum'");
+        unitPaint.setTypeface(Type.MEDIUM);
+        captionPaint.setTypeface(Type.REGULAR);
     }
 
     public void updateMetric(int pct, boolean hasTemp, int tC) {
         int clamped = Math.max(0, Math.min(100, pct));
-        boolean changed = (clamped != this.targetPercent || hasTemp != this.tempAvailable || tC != this.tempC);
-        this.targetPercent = clamped;
-        this.tempAvailable = hasTemp;
-        this.tempC = tC;
-        if (changed || Math.abs(targetPercent - displayPercent) > 0.25f) {
+        boolean changed = clamped != targetPercent || hasTemp != tempAvailable || tC != tempC;
+        targetPercent = clamped;
+        tempAvailable = hasTemp;
+        tempC = tC;
+        if (!changed) return;
+        if (Motion.reduced()) {
+            displayPercent = clamped;
+            invalidate();
+        } else {
+            lastFrameMs = SystemClock.uptimeMillis();
             postInvalidateOnAnimation();
         }
     }
 
     public void setLightSurface(boolean light) {
-        this.lightSurface = light;
+        if (lightSurface == light) return;
+        lightSurface = light;
         invalidate();
     }
 
@@ -65,97 +80,83 @@ public final class LiquidStatCardView extends View {
         float dp = getResources().getDisplayMetrics().density;
         int w = MeasureSpec.getSize(widthMeasureSpec);
         int hMode = MeasureSpec.getMode(heightMeasureSpec);
-        int h = (hMode == MeasureSpec.EXACTLY) ? MeasureSpec.getSize(heightMeasureSpec) : Math.round(112 * dp);
+        int h = (hMode == MeasureSpec.EXACTLY)
+                ? MeasureSpec.getSize(heightMeasureSpec)
+                : Math.round(96 * dp);
         setMeasuredDimension(w, h);
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        float dp = getResources().getDisplayMetrics().density;
+        float density = getResources().getDisplayMetrics().density;
         int w = getWidth();
         int h = getHeight();
-        float rad = 18 * dp;
-        cardRect.set(dp, dp, w - dp, h - dp);
-
-        long now = android.os.SystemClock.uptimeMillis();
-        float dt = lastFrameMs > 0L ? Math.min(0.05f, Math.max(0.004f, (now - lastFrameMs) / 1000f)) : 0.016f;
-        lastFrameMs = now;
+        if (w <= 0 || h <= 0) return;
 
         float diff = targetPercent - displayPercent;
-        boolean stillEasing = Math.abs(diff) > 0.15f;
-        if (stillEasing) {
-            displayPercent += diff * (1f - (float) Math.exp(-dt * 7.5f));
-            wavePhase += dt * 2.4f;
+        boolean easing = Math.abs(diff) > 0.12f && !Motion.reduced();
+        if (easing) {
+            long now = SystemClock.uptimeMillis();
+            float dt = lastFrameMs == 0L ? 0.016f : (now - lastFrameMs) / 1000f;
+            lastFrameMs = now;
+            displayPercent += diff * (1f - (float) Math.exp(-dt * 9f));
         } else {
             displayPercent = targetPercent;
         }
 
-        cardPaint.setColor(lightSurface ? Color.argb(235, 240, 244, 250) : Color.argb(225, 22, 26, 34));
-        canvas.drawRoundRect(cardRect, rad, rad, cardPaint);
+        float inset = 1f * density;
+        float radius = 18f * density;
+        cardRect.set(inset, inset, w - inset, h - inset);
 
-        // Smooth interpolated liquid fill level
-        canvas.save();
-        clipPath.reset();
-        clipPath.addRoundRect(cardRect, rad, rad, Path.Direction.CW);
-        canvas.clipPath(clipPath);
+        cardPaint.setColor(lightSurface
+                ? Color.argb(238, 255, 255, 255)
+                : Color.argb(206, 24, 27, 34));
+        canvas.drawRoundRect(cardRect, radius, radius, cardPaint);
 
-        float fillFrac = Math.max(0.06f, displayPercent / 100f);
-        float baseY = cardRect.bottom - cardRect.height() * fillFrac;
-        float amp = 3.8f * dp;
+        rimPaint.setColor(lightSurface ? Color.argb(52, 18, 24, 32) : Color.argb(34, 255, 255, 255));
+        canvas.drawRoundRect(cardRect, radius, radius, rimPaint);
 
-        wavePath.reset();
-        crestPath.reset();
-        wavePath.moveTo(cardRect.left, cardRect.bottom);
-        int steps = 16;
-        float prevX = cardRect.left;
-        float prevY = baseY + (float) Math.sin(wavePhase) * amp;
-        wavePath.lineTo(prevX, prevY);
-        crestPath.moveTo(prevX, prevY);
-        for (int i = 1; i <= steps; i++) {
-            float x = cardRect.left + (cardRect.width() * i / (float) steps);
-            float y = baseY + (float) Math.sin(wavePhase + i * 0.55f) * amp;
-            float midX = (prevX + x) * 0.5f;
-            float midY = (prevY + y) * 0.5f;
-            wavePath.quadTo(prevX, prevY, midX, midY);
-            crestPath.quadTo(prevX, prevY, midX, midY);
-            prevX = x;
-            prevY = y;
+        float pad = 13f * density;
+
+        titlePaint.setTextSize(9.5f * getResources().getDisplayMetrics().scaledDensity);
+        titlePaint.setColor(lightSurface ? Color.argb(190, 48, 56, 68) : Color.argb(168, 205, 214, 228));
+        canvas.drawText(metricTitle, pad, 22f * density, titlePaint);
+
+        int rounded = Math.round(displayPercent);
+        valuePaint.setTextSize(25f * getResources().getDisplayMetrics().scaledDensity);
+        valuePaint.setColor(lightSurface ? Color.rgb(14, 17, 22) : Color.rgb(247, 249, 252));
+        String valueText = String.valueOf(rounded);
+        float valueBaseline = 54f * density;
+        canvas.drawText(valueText, pad, valueBaseline, valuePaint);
+
+        unitPaint.setTextSize(11f * getResources().getDisplayMetrics().scaledDensity);
+        unitPaint.setColor(lightSurface ? Color.argb(150, 48, 56, 68) : Color.argb(150, 200, 210, 224));
+        canvas.drawText("%", pad + valuePaint.measureText(valueText) + 2f * density,
+                valueBaseline - 1f * density, unitPaint);
+
+        captionPaint.setTextSize(10f * getResources().getDisplayMetrics().scaledDensity);
+        captionPaint.setColor(tempAvailable
+                ? accentColor
+                : (lightSurface ? Color.argb(120, 70, 78, 90) : Color.argb(120, 172, 182, 196)));
+        String caption = tempAvailable ? (tempC + "\u00B0C") : "No sensor";
+        canvas.drawText(caption, pad, h - 20f * density, captionPaint);
+
+        float meterH = 3f * density;
+        float meterLeft = pad;
+        float meterRight = w - pad;
+        float meterTop = h - 12f * density;
+        meterRect.set(meterLeft, meterTop, meterRight, meterTop + meterH);
+        meterTrackPaint.setColor(lightSurface ? Color.argb(26, 18, 24, 32) : Color.argb(28, 255, 255, 255));
+        canvas.drawRoundRect(meterRect, meterH * 0.5f, meterH * 0.5f, meterTrackPaint);
+
+        float level = Math.max(0f, Math.min(1f, displayPercent / 100f));
+        if (level > 0.01f) {
+            meterRect.right = meterLeft + (meterRight - meterLeft) * level;
+            meterFillPaint.setColor(accentColor);
+            canvas.drawRoundRect(meterRect, meterH * 0.5f, meterH * 0.5f, meterFillPaint);
         }
-        wavePath.lineTo(cardRect.right, prevY);
-        crestPath.lineTo(cardRect.right, prevY);
-        wavePath.lineTo(cardRect.right, cardRect.bottom);
-        wavePath.close();
 
-        liquidPaint.setColor(accentColor);
-        liquidPaint.setAlpha(74);
-        canvas.drawPath(wavePath, liquidPaint);
-
-        liquidCrestPaint.setColor(accentColor);
-        liquidCrestPaint.setAlpha(150);
-        liquidCrestPaint.setStyle(Paint.Style.STROKE);
-        liquidCrestPaint.setStrokeWidth(1.6f * dp);
-        canvas.drawPath(crestPath, liquidCrestPaint);
-
-        canvas.restore();
-
-        borderPaint.setColor(lightSurface ? Color.argb(60, 20, 30, 45) : Color.argb(65, 255, 255, 255));
-        canvas.drawRoundRect(cardRect, rad, rad, borderPaint);
-
-        titlePaint.setTextSize(12 * dp);
-        titlePaint.setColor(lightSurface ? Color.rgb(75, 85, 100) : Color.rgb(160, 170, 185));
-        canvas.drawText(metricTitle, 14 * dp, 24 * dp, titlePaint);
-
-        valuePaint.setTextSize(26 * dp);
-        valuePaint.setColor(lightSurface ? Color.rgb(16, 20, 26) : Color.rgb(248, 250, 252));
-        canvas.drawText(Math.round(displayPercent) + "%", 14 * dp, 64 * dp, valuePaint);
-
-        tempPaint.setTextSize(12 * dp);
-        tempPaint.setColor(tempAvailable ? accentColor : (lightSurface ? Color.rgb(110, 120, 132) : Color.rgb(125, 134, 148)));
-        canvas.drawText(tempAvailable ? (tempC + " C") : "Temp N/A", 14 * dp, h - 14 * dp, tempPaint);
-
-        if (stillEasing) {
-            postInvalidateOnAnimation();
-        }
+        if (easing) postInvalidateOnAnimation();
     }
 }

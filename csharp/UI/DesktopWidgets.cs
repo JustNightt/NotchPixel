@@ -77,7 +77,7 @@ namespace OpenPixel.UI
             _screenY = y;
             Bounds = new Rectangle(x, y, BaseWidth(type), BaseHeight(type));
             if (type == WidgetType.DayClock || type == WidgetType.AnalogClock || type == WidgetType.PlainWeather)
-                StyleMode = 3; // Float directly on wallpaper matching NotchPixel Day Clock/Analog/Plain Weather
+                StyleMode = 3; // Float directly on wallpaper matching OpenPixel Day Clock/Analog/Plain Weather
             CustomAccent = Color.FromArgb(_state.Settings.DayClockAccentColorArgb);
             UpdateStockWidget();
         }
@@ -261,10 +261,7 @@ namespace OpenPixel.UI
         public void RenderNow()
         {
             if (IsDisposed || !IsHandleCreated) return;
-            if (StyleMode == 0 && !_state.Settings.FallbackBlackOnGlassCrash)
-                Win32Layered.SetWindowDisplayAffinity(Handle, Win32Layered.WDA_EXCLUDEFROMCAPTURE);
-            else
-                WindowsSystemHooks.ApplyWindowCaptureAffinity(Handle, _state);
+            WindowsSystemHooks.ApplyWindowCaptureAffinity(Handle, _state);
             PositionWindow();
 
             try
@@ -288,7 +285,9 @@ namespace OpenPixel.UI
                         drewGlass = _renderer.RenderLiquidGlassBackdrop(
                             new Rectangle(_screenX, _screenY, Width, Height),
                             2, 2, Width - 4, Height - 4, _state.Settings.GlassBlurRadius,
-                            _state.Settings.Theme, 18.0f * _renderer.DpiScale);
+                            _state.Settings.Theme, 18.0f * _renderer.DpiScale,
+                            reuseWithoutCaptureMs: 750.0f,
+                            minRefreshIntervalMs: 250.0f);
                     }
                     if (!drewGlass)
                     {
@@ -304,11 +303,17 @@ namespace OpenPixel.UI
                     _renderer.DrawRoundedRect(box, 18, rimCol, 1.0f);
                 }
 
-                Color ink = isLightSurface ? Color.FromArgb(255, 12, 12, 14) : (WidgetType == WidgetType.DayClock ? CustomAccent : globalTheme.TextPrimary);
+                Color pickerCol = Color.FromArgb(_state.Settings.DayClockAccentColorArgb);
+                bool hasCustomWidgetColor = pickerCol.A >= 30 && pickerCol.ToArgb() != Color.White.ToArgb();
+                Color ink = isLightSurface
+                    ? Color.FromArgb(255, 12, 12, 14)
+                    : (hasCustomWidgetColor || WidgetType == WidgetType.DayClock ? pickerCol : globalTheme.TextPrimary);
                 Color muted = isLightSurface ? Color.FromArgb(255, 82, 82, 88) : globalTheme.TextMuted;
                 Color faint = isLightSurface ? Color.FromArgb(255, 128, 128, 134) : globalTheme.TextFaint;
-                Color accent = _state.Settings.AccentColorArgb != 0 ? Color.FromArgb(_state.Settings.AccentColorArgb) : globalTheme.Accent;
-                if (StyleMode == 2) accent = ThemeSpec.AdaptiveInkForBackground(ink);
+                Color accent = hasCustomWidgetColor
+                    ? pickerCol
+                    : (_state.Settings.AccentColorArgb != 0 ? Color.FromArgb(_state.Settings.AccentColorArgb) : globalTheme.Accent);
+                if (StyleMode == 2 && !hasCustomWidgetColor) accent = ThemeSpec.AdaptiveInkForBackground(ink);
 
                 DateTime now = DateTime.Now;
                 switch (WidgetType)
@@ -619,7 +624,7 @@ namespace OpenPixel.UI
 
         private void DrawCalendar(DateTime now, Color ink, Color muted, Color faint, Color accent)
         {
-            // Exact match to live NotchPixel Today widget (282x113):
+            // Exact match to live OpenPixel Today widget (282x113):
             // Large day number + stacked FRI/NOV + Week N + 7-day strip with two-tone today pill.
             float k = ScalePercent / 100.0f;
             float padX = 16.0f * k;
@@ -980,7 +985,7 @@ namespace OpenPixel.UI
 
             if (!_state.FocusTimerRunning)
             {
-                // Stopped state: - and + minute adjustment pills matching live NotchPixel widget
+                // Stopped state: - and + minute adjustment pills matching live OpenPixel widget
                 var minusRect = new RectangleF(playRect.Right + 8.0f * k, btnY + 1.0f * k, 28.0f * k, 28.0f * k);
                 _renderer.FillRoundedRect(minusRect, 9.0f * k, Color.FromArgb(30, ink.R, ink.G, ink.B));
                 _renderer.DrawTextStr("\u2212", minusRect, 13.0f * k, true, muted, hAlign: StringAlignment.Center);

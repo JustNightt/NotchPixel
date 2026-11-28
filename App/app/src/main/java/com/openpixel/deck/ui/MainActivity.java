@@ -48,12 +48,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * NotchPixel Deck floating pill control surface for Android.
+ * OpenPixel Deck floating pill control surface for Android.
  * Tabs: Now, Pad, Apps, Modes (Game, Present, Movie, Work), and PC.
  */
 public final class MainActivity extends Activity {
     private static final int REQ_PAIR = 2010;
     private static final int REQ_NOTIF = 2011;
+
+    private static final int ACCENT_FALLBACK = Color.rgb(43, 228, 234);
+
+    // Chrome roles, re-tinted whenever the surface switches between light and dark.
+    private static final int ROLE_NEUTRAL = 0;
+    private static final int ROLE_INVERSE = 1;
+    private static final int ROLE_PRIMARY = 2;
+    private static final int ROLE_DANGER = 3;
+    private static final int ROLE_SELF = 4;
 
     private SecurePairingStore store;
     private PinnedDeckClient client;
@@ -85,17 +94,18 @@ public final class MainActivity extends Activity {
     private FrameLayout contentHost;
     private LiquidBottomBarView bottomTabBar;
     private final List<LiquidGlassHelper.GlassContainer> glassCards = new ArrayList<>();
+    private final List<IconButtonView> chromeButtons = new ArrayList<>();
     private LiquidStatCardView nowCardCpu, nowCardGpu, nowCardRam;
     private LinearLayout nowWidgetContent;
-    private final Button[] nowWidgetBtns = new Button[3];
+    private final IconButtonView[] nowWidgetBtns = new IconButtonView[3];
     private int activeNowWidget = 0; // 0=Clipboard, 1=Files, 2=To-Do
     private FrameLayout nowArtCard;
     private ImageView ivNowArt;
-    private TextView tvNowArtGlyph;
+    private IconView ivNowIcon;
     private String lastArtB64 = "";
-    private Button btnDeckFullscreen, btnAddSlotRef;
+    private IconButtonView btnDeckFullscreen, btnAddSlotRef;
     private LinearLayout appsCardHeader, deckSplitRow, deckSidebar;
-    private Button btnSideAudioMute, btnSideMicMute, btnSideTestAudio;
+    private IconButtonView btnSideAudioMute, btnSideMicMute, btnSideTestAudio;
     private boolean deckFullscreen = false;
     private LinearLayout shelfListBox, clipListBox, todoListBox;
     private final Button[] gradientButtons = new Button[5];
@@ -103,14 +113,18 @@ public final class MainActivity extends Activity {
     private LiquidToggleView swAudioWave, swSyncMusicColor;
     private String lastAppsSignature = "";
     private String lastThemeSignature = "";
-    private int activeAccentColor = Color.rgb(43, 228, 234);
+    private String lastPairingSig = "";
+    private String lastAmbientSig = "";
+    private String lastArtCardSig = "";
+    private int activeAccentColor = ACCENT_FALLBACK;
     private boolean glassSurface = true;
 
     // Now tab views
     private LinearLayout tabNow;
     private TextView tvMediaTitle, tvMediaArtist, tvMediaApp, tvMediaTime, tvVolLabel;
     private LiquidSliderView sbSeek, sbVolume;
-    private Button btnPlayPause, btnMuteVol, btnMuteMic;
+    private IconButtonView btnPlayPause, btnMuteVol;
+    private Button btnMuteMic;
     private boolean isSeekingMedia = false;
     private boolean isDraggingVolume = false;
     private long lastSeekSendMs = 0L;
@@ -132,7 +146,7 @@ public final class MainActivity extends Activity {
     private final Button[] modeSubBtns = new Button[4];
     private FrameLayout modeSubHost;
     private TextView tvRecTimer, tvPresentTimer;
-    private Button btnGameRecord;
+    private IconButtonView btnGameRecord;
 
     // PC tab views
     private LinearLayout tabPc;
@@ -176,35 +190,29 @@ public final class MainActivity extends Activity {
         }
     };
 
+    /**
+     * Sends one coalesced pointer packet per flush instead of holding a thread in a
+     * sleep loop; if more movement arrived while that packet was in flight, a short
+     * follow-up flush picks it up.
+     */
     private void schedulePadFlush() {
         if (!store.isPaired()) return;
-        if (padFlushScheduled.compareAndSet(false, true)) {
-            padUdpExecutor.execute(() -> {
-                try {
-                    while (true) {
-                        int dx = pendingPadDx.getAndSet(0);
-                        int dy = pendingPadDy.getAndSet(0);
-                        int sc = pendingPadScroll.getAndSet(0);
-                        if (dx != 0 || dy != 0) {
-                            client.sendPadUdp("move|" + dx + "|" + dy);
-                        }
-                        if (sc != 0) {
-                            client.sendPadUdp("scroll|" + sc);
-                        }
-                        if (pendingPadDx.get() == 0 && pendingPadDy.get() == 0 && pendingPadScroll.get() == 0) {
-                            break;
-                        }
-                        Thread.sleep(8);
-                    }
-                } catch (Exception ignored) {
-                } finally {
-                    padFlushScheduled.set(false);
-                    if (pendingPadDx.get() != 0 || pendingPadDy.get() != 0 || pendingPadScroll.get() != 0) {
-                        schedulePadFlush();
-                    }
-                }
-            });
-        }
+        if (!padFlushScheduled.compareAndSet(false, true)) return;
+        padUdpExecutor.execute(() -> {
+            int dx = pendingPadDx.getAndSet(0);
+            int dy = pendingPadDy.getAndSet(0);
+            int sc = pendingPadScroll.getAndSet(0);
+            try {
+                if (dx != 0 || dy != 0) client.sendPadUdp("move|" + dx + "|" + dy);
+                if (sc != 0) client.sendPadUdp("scroll|" + sc);
+            } catch (Exception ignored) {
+            } finally {
+                padFlushScheduled.set(false);
+            }
+            if (pendingPadDx.get() != 0 || pendingPadDy.get() != 0 || pendingPadScroll.get() != 0) {
+                uiHandler.postDelayed(() -> schedulePadFlush(), 6L);
+            }
+        });
     }
 
     @Override
@@ -230,6 +238,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        Motion.refreshReducedMotion();
         // Reload pairing secrets saved by QrPairingActivity so connection starts immediately.
         store.reload();
         refreshPairingSummary();
@@ -253,6 +262,103 @@ public final class MainActivity extends Activity {
         gd.setCornerRadius(dp(radDp));
         gd.setStroke(Math.round(dp(1f)), stroke);
         return gd;
+    }
+
+    /**
+     * Press feedback that lands on touch-down and releases on cancel, instead of
+     * playing after the click has already happened.
+     */
+    private void attachPressFeedback(View v) {
+        v.setOnTouchListener((view, ev) -> {
+            switch (ev.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    if (!Motion.reduced()) {
+                        view.animate().cancel();
+                        view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(80).start();
+                    }
+                    break;
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    if (!Motion.reduced()) {
+                        view.animate().cancel();
+                        view.animate().scaleX(1f).scaleY(1f).setDuration(180).start();
+                    }
+                    break;
+                default:
+                    break;
+            }
+            return false;
+        });
+    }
+
+    private IconButtonView makeIconButton(String icon, String label, int mode, int role) {
+        IconButtonView b = new IconButtonView(this);
+        b.setContent(icon, label);
+        b.setMode(mode);
+        boolean vertical = mode == IconButtonView.ICON_LABEL_VERTICAL;
+        b.setRadiusDp(mode == IconButtonView.ICON_ONLY ? 60f : (vertical ? 18f : 14f));
+        b.setPaddingDp(vertical ? 8f : 12f);
+        b.setIconSizeDp(vertical ? 21f : 18f);
+        b.setGapDp(vertical ? 8f : 8f);
+        b.setMinHeightDp(vertical ? 72f : 42f);
+        if (vertical) b.setLabelSizeSp(11f);
+        registerChrome(b, role);
+        return b;
+    }
+
+    private void registerChrome(IconButtonView b, int role) {
+        b.setTag(role);
+        chromeButtons.add(b);
+        applyChromeTokens(b);
+    }
+
+    private void applyChromeTokens(IconButtonView b) {
+        Object tag = b.getTag();
+        int role = tag instanceof Integer ? (Integer) tag : ROLE_NEUTRAL;
+        if (role == ROLE_SELF) return;
+
+        int fill;
+        int rim;
+        int ink;
+        switch (role) {
+            case ROLE_INVERSE:
+                fill = lightSurface ? Color.rgb(18, 20, 26) : Color.rgb(247, 247, 244);
+                rim = lightSurface ? Color.argb(40, 0, 0, 0) : Color.argb(36, 255, 255, 255);
+                ink = lightSurface ? Color.WHITE : Color.rgb(12, 12, 14);
+                break;
+            case ROLE_PRIMARY:
+                fill = activeAccentColor;
+                rim = Color.argb(72, 255, 255, 255);
+                ink = Color.rgb(9, 11, 14);
+                break;
+            case ROLE_DANGER:
+                fill = lightSurface ? Color.argb(28, 198, 46, 46) : Color.argb(44, 216, 60, 60);
+                rim = lightSurface ? Color.argb(46, 198, 46, 46) : Color.argb(58, 255, 120, 120);
+                ink = lightSurface ? Color.rgb(158, 26, 26) : Color.rgb(255, 214, 214);
+                break;
+            default:
+                fill = lightSurface ? Color.argb(16, 12, 16, 22) : Color.argb(28, 255, 255, 255);
+                rim = lightSurface ? Color.argb(30, 12, 16, 22) : Color.argb(30, 255, 255, 255);
+                ink = lightSurface ? Color.rgb(16, 18, 22) : Color.WHITE;
+                break;
+        }
+        b.setTokens(fill, rim, ink);
+    }
+
+    private void applyChrome() {
+        for (IconButtonView b : chromeButtons) applyChromeTokens(b);
+    }
+
+    private int surfaceInk() {
+        return lightSurface ? Color.rgb(16, 18, 22) : Color.rgb(246, 248, 251);
+    }
+
+    private int mutedInk() {
+        return lightSurface ? Color.argb(180, 56, 62, 74) : Color.argb(178, 205, 214, 226);
+    }
+
+    private int neutralFill() {
+        return lightSurface ? Color.argb(14, 12, 16, 22) : Color.argb(24, 255, 255, 255);
     }
 
     private void buildUi() {
@@ -286,22 +392,23 @@ public final class MainActivity extends Activity {
         topPill.setOnClickListener(v -> startActivityForResult(new Intent(this, QrPairingActivity.class), REQ_PAIR));
 
         topStatusDot = new View(this);
-        LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(Math.round(dp(9)), Math.round(dp(9)));
+        LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(Math.round(dp(7)), Math.round(dp(7)));
         dotLp.rightMargin = Math.round(dp(9));
         topPill.addView(topStatusDot, dotLp);
 
         tvTopStatus = new TextView(this);
         tvTopStatus.setText(store.isPaired() ? store.getPcName() : "Pair PC");
-        tvTopStatus.setTextSize(13.5f);
+        Type.style(tvTopStatus, 13f, Type.MEDIUM, -0.01f);
         tvTopStatus.setSingleLine(true);
-        tvTopStatus.getPaint().setFakeBoldText(true);
+        tvTopStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        tvTopStatus.setMaxWidth(Math.round(dp(168)));
         topPill.addView(tvTopStatus);
 
         tvTopBadge = new TextView(this);
-        tvTopBadge.setText(store.isPaired() ? "SYNCING" : "SETUP");
-        tvTopBadge.setTextSize(9.5f);
-        tvTopBadge.getPaint().setFakeBoldText(true);
-        tvTopBadge.setPadding(Math.round(dp(8)), Math.round(dp(3)), Math.round(dp(8)), Math.round(dp(3)));
+        tvTopBadge.setText(store.isPaired() ? "LIVE" : "SETUP");
+        Type.label(tvTopBadge);
+        tvTopBadge.setLetterSpacing(0.09f);
+        tvTopBadge.setPadding(Math.round(dp(7)), Math.round(dp(3)), Math.round(dp(7)), Math.round(dp(3)));
         LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         badgeLp.leftMargin = Math.round(dp(10));
@@ -321,7 +428,7 @@ public final class MainActivity extends Activity {
         rootLayout.addView(topPillWrap, topLp);
 
         tvBannerNotice = new TextView(this);
-        tvBannerNotice.setTextSize(12f);
+        Type.caption(tvBannerNotice);
         tvBannerNotice.setGravity(Gravity.CENTER);
         tvBannerNotice.setPadding(Math.round(dp(8)), 0, Math.round(dp(8)), Math.round(dp(8)));
         tvBannerNotice.setVisibility(View.GONE);
@@ -392,13 +499,12 @@ public final class MainActivity extends Activity {
         b.setText(text);
         b.setAllCaps(false);
         b.setTextColor(fg);
-        b.setTextSize(13f);
+        Type.style(b, 12.5f, Type.MEDIUM, 0.008f);
         b.setMinHeight(0);
         b.setMinimumHeight(0);
         b.setStateListAnimator(null);
-        b.getPaint().setFakeBoldText(true);
-        b.setBackground(pillDrawable(bg, Color.argb(24, 255, 255, 255), 14));
-        b.setPadding(Math.round(dp(14)), Math.round(dp(11)), Math.round(dp(14)), Math.round(dp(11)));
+        b.setBackground(pillDrawable(bg, Color.argb(20, 255, 255, 255), 12));
+        b.setPadding(Math.round(dp(12)), Math.round(dp(11)), Math.round(dp(12)), Math.round(dp(11)));
         return b;
     }
 
@@ -421,12 +527,8 @@ public final class MainActivity extends Activity {
         nowArtCard.addView(ivNowArt, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-        tvNowArtGlyph = new TextView(this);
-        tvNowArtGlyph.setText("♪");
-        tvNowArtGlyph.setTextSize(54f);
-        tvNowArtGlyph.setTextColor(Color.argb(195, 239, 237, 232));
-        tvNowArtGlyph.setGravity(Gravity.CENTER);
-        nowArtCard.addView(tvNowArtGlyph, new FrameLayout.LayoutParams(
+        ivNowIcon = new IconView(this, Icons.MUSIC, 46f, Color.argb(185, 238, 240, 244));
+        nowArtCard.addView(ivNowIcon, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         LinearLayout.LayoutParams artLp = new LinearLayout.LayoutParams(Math.round(dp(208)), Math.round(dp(208)));
         artLp.topMargin = Math.round(dp(6));
@@ -434,24 +536,28 @@ public final class MainActivity extends Activity {
         tabNow.addView(nowArtCard, artLp);
 
         tvMediaApp = new TextView(this);
-        tvMediaApp.setText("NOW PLAYING ON PC");
-        tvMediaApp.setTextSize(10.5f);
+        tvMediaApp.setText("Now playing on PC");
+        Type.label(tvMediaApp);
+        tvMediaApp.setLetterSpacing(0.12f);
         tvMediaApp.setGravity(Gravity.CENTER);
-        tvMediaApp.setTextColor(Color.argb(165, 239, 237, 232));
+        tvMediaApp.setTextColor(mutedInk());
         tabNow.addView(tvMediaApp);
 
         tvMediaTitle = new TextView(this);
         tvMediaTitle.setText("Nothing playing");
-        tvMediaTitle.setTextSize(21f);
+        Type.display(tvMediaTitle);
         tvMediaTitle.setGravity(Gravity.CENTER);
-        tvMediaTitle.getPaint().setFakeBoldText(true);
-        tvMediaTitle.setPadding(Math.round(dp(8)), Math.round(dp(4)), Math.round(dp(8)), Math.round(dp(2)));
+        tvMediaTitle.setSingleLine(true);
+        tvMediaTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        tvMediaTitle.setPadding(Math.round(dp(8)), Math.round(dp(6)), Math.round(dp(8)), Math.round(dp(2)));
         tabNow.addView(tvMediaTitle);
 
         tvMediaArtist = new TextView(this);
         tvMediaArtist.setText("Play music or video on your PC");
-        tvMediaArtist.setTextSize(14f);
+        Type.body(tvMediaArtist);
         tvMediaArtist.setGravity(Gravity.CENTER);
+        tvMediaArtist.setSingleLine(true);
+        tvMediaArtist.setEllipsize(android.text.TextUtils.TruncateAt.END);
         tabNow.addView(tvMediaArtist);
 
         sbSeek = new LiquidSliderView(this);
@@ -484,7 +590,7 @@ public final class MainActivity extends Activity {
 
         tvMediaTime = new TextView(this);
         tvMediaTime.setText("0:00 / 0:00");
-        tvMediaTime.setTextSize(11.5f);
+        Type.numeric(tvMediaTime, 11.5f);
         tvMediaTime.setGravity(Gravity.CENTER);
         tabNow.addView(tvMediaTime);
 
@@ -494,25 +600,28 @@ public final class MainActivity extends Activity {
         transport.setGravity(Gravity.CENTER);
         transport.setPadding(0, Math.round(dp(20)), 0, Math.round(dp(22)));
 
-        Button btnPrev = makeActionBtn("⏮", Color.argb(36, 255, 255, 255), Color.WHITE);
-        btnPrev.setTextSize(18f);
-        btnPrev.setBackground(pillDrawable(Color.argb(34, 255, 255, 255), Color.argb(44, 255, 255, 255), 26));
-        btnPrev.setOnClickListener(v -> sendAsync(() -> client.sendMediaAction("a=prev")));
+        IconButtonView btnPrev = makeIconButton(Icons.PREV, "", IconButtonView.ICON_ONLY, ROLE_NEUTRAL);
+        btnPrev.setPaddingDp(0f);
+        btnPrev.setMinHeightDp(0f);
+        btnPrev.setIconSizeDp(17f);
+        btnPrev.setOnActionListener(() -> sendAsync(() -> client.sendMediaAction("a=prev")));
 
-        btnPlayPause = makeActionBtn("❚❚", Color.rgb(245, 245, 243), Color.rgb(12, 12, 14));
-        btnPlayPause.setTextSize(20f);
-        btnPlayPause.setBackground(pillDrawable(Color.rgb(245, 245, 243), Color.TRANSPARENT, 34));
-        btnPlayPause.setOnClickListener(v -> {
-            // Immediate 0ms optimistic toggle so Play/Pause never feels delayed
+        btnPlayPause = makeIconButton(Icons.PAUSE, "", IconButtonView.ICON_ONLY, ROLE_INVERSE);
+        btnPlayPause.setPaddingDp(0f);
+        btnPlayPause.setMinHeightDp(0f);
+        btnPlayPause.setIconSizeDp(22f);
+        btnPlayPause.setOnActionListener(() -> {
+            // Optimistic on release so the control never feels delayed.
             lastState.isPlaying = !lastState.isPlaying;
-            btnPlayPause.setText(lastState.isPlaying ? "❚❚" : "▶");
+            btnPlayPause.setIcon(lastState.isPlaying ? Icons.PAUSE : Icons.PLAY);
             sendAsync(() -> client.sendMediaAction("a=play"));
         });
 
-        Button btnNext = makeActionBtn("⏭", Color.argb(36, 255, 255, 255), Color.WHITE);
-        btnNext.setTextSize(18f);
-        btnNext.setBackground(pillDrawable(Color.argb(34, 255, 255, 255), Color.argb(44, 255, 255, 255), 26));
-        btnNext.setOnClickListener(v -> sendAsync(() -> client.sendMediaAction("a=next")));
+        IconButtonView btnNext = makeIconButton(Icons.NEXT, "", IconButtonView.ICON_ONLY, ROLE_NEUTRAL);
+        btnNext.setPaddingDp(0f);
+        btnNext.setMinHeightDp(0f);
+        btnNext.setIconSizeDp(17f);
+        btnNext.setOnActionListener(() -> sendAsync(() -> client.sendMediaAction("a=next")));
 
         LinearLayout.LayoutParams cSide1 = new LinearLayout.LayoutParams(Math.round(dp(52)), Math.round(dp(52)));
         cSide1.rightMargin = Math.round(dp(22));
@@ -530,13 +639,13 @@ public final class MainActivity extends Activity {
         volRow.setGravity(Gravity.CENTER_VERTICAL);
         volRow.setPadding(Math.round(dp(4)), 0, Math.round(dp(4)), Math.round(dp(8)));
 
-        btnMuteVol = makeActionBtn("🔊", Color.argb(34, 255, 255, 255), Color.WHITE);
-        btnMuteVol.setTextSize(14f);
-        btnMuteVol.setBackground(pillDrawable(Color.argb(34, 255, 255, 255), Color.argb(38, 255, 255, 255), 20));
-        btnMuteVol.setPadding(0, 0, 0, 0);
-        btnMuteVol.setOnClickListener(v -> {
+        btnMuteVol = makeIconButton(Icons.VOLUME, "", IconButtonView.ICON_ONLY, ROLE_NEUTRAL);
+        btnMuteVol.setPaddingDp(0f);
+        btnMuteVol.setMinHeightDp(0f);
+        btnMuteVol.setIconSizeDp(16f);
+        btnMuteVol.setOnActionListener(() -> {
             lastState.muted = !lastState.muted;
-            btnMuteVol.setText(lastState.muted ? "🔇" : "🔊");
+            btnMuteVol.setIcon(lastState.muted ? Icons.VOLUME_OFF : Icons.VOLUME);
             tvVolLabel.setText(lastState.muted ? "0" : String.valueOf(lastState.volume));
             sendAsync(() -> client.sendMediaAction("a=mute"));
         });
@@ -569,7 +678,7 @@ public final class MainActivity extends Activity {
 
         tvVolLabel = new TextView(this);
         tvVolLabel.setText("--");
-        tvVolLabel.setTextSize(13f);
+        Type.numeric(tvVolLabel, 12.5f);
         tvVolLabel.setGravity(Gravity.END);
         volRow.addView(tvVolLabel, new LinearLayout.LayoutParams(Math.round(dp(34)), LinearLayout.LayoutParams.WRAP_CONTENT));
         tabNow.addView(volRow, new LinearLayout.LayoutParams(
@@ -603,13 +712,18 @@ public final class MainActivity extends Activity {
         LinearLayout widgetDeckCard = makeCardContainer();
         LinearLayout wTabs = new LinearLayout(this);
         wTabs.setOrientation(LinearLayout.HORIZONTAL);
-        String[] wLabels = {"📋 Clipboard", "📄 Files", "☑ To-Do"};
+        String[] wLabels = {"Clipboard", "Files", "To-Do"};
+        String[] wIcons = {Icons.CLIPBOARD, Icons.FILE, Icons.CHECK_SQUARE};
         for (int i = 0; i < 3; i++) {
             final int wi = i;
-            Button wb = makeActionBtn(wLabels[i], Color.argb(28, 255, 255, 255), Color.WHITE);
-            wb.setTextSize(11.5f);
-            wb.setPadding(Math.round(dp(6)), Math.round(dp(7)), Math.round(dp(6)), Math.round(dp(7)));
-            wb.setOnClickListener(v -> {
+            IconButtonView wb = makeIconButton(wIcons[i], wLabels[i],
+                    IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_SELF);
+            wb.setIconSizeDp(14f);
+            wb.setGapDp(6f);
+            wb.setLabelSizeSp(11f);
+            wb.setPaddingDp(7f);
+            wb.setMinHeightDp(38f);
+            wb.setOnActionListener(() -> {
                 activeNowWidget = wi;
                 try { android.transition.TransitionManager.beginDelayedTransition(widgetDeckCard); } catch (Exception ignored) {}
                 rebuildNowWidgets(lastState);
@@ -634,9 +748,12 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < 3; i++) {
             if (nowWidgetBtns[i] == null) continue;
             boolean sel = i == activeNowWidget;
-            nowWidgetBtns[i].setBackground(pillDrawable(
-                    sel ? activeAccentColor : Color.argb(24, 255, 255, 255), Color.TRANSPARENT, 12));
-            nowWidgetBtns[i].setTextColor(sel ? Color.rgb(10, 12, 16) : Color.argb(215, 235, 238, 245));
+            nowWidgetBtns[i].setTokens(
+                    sel ? activeAccentColor
+                        : (lightSurface ? Color.argb(14, 12, 16, 22) : Color.argb(22, 255, 255, 255)),
+                    Color.TRANSPARENT,
+                    sel ? Color.rgb(10, 12, 16)
+                        : (lightSurface ? Color.rgb(52, 58, 70) : Color.argb(212, 235, 238, 245)));
         }
         nowWidgetContent.removeAllViews();
         if (activeNowWidget == 0) {
@@ -646,13 +763,13 @@ public final class MainActivity extends Activity {
                 int n = Math.min(4, st.clipboard.size());
                 for (int i = 0; i < n; i++) {
                     final PinnedDeckClient.ClipItem ci = st.clipboard.get(i);
-                    TextView row = makeWidgetRow((ci.pinned ? "📌  " : "📋  ") + ci.text.replace('\n', ' '), false);
+                    View row = makeWidgetRow(ci.text.replace('\n', ' '),
+                            ci.pinned ? Icons.BOOKMARK : Icons.CLIPBOARD, false);
+                    attachPressFeedback(row);
                     row.setOnClickListener(v -> {
-                        v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(60)
-                                .withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(80).start()).start();
                         try {
                             ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("NotchPixel", ci.text));
+                            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("OpenPixel", ci.text));
                             Toast.makeText(this, "Copied to phone clipboard", Toast.LENGTH_SHORT).show();
                         } catch (Exception ignored) {}
                     });
@@ -675,12 +792,10 @@ public final class MainActivity extends Activity {
                 int n = Math.min(5, st.todos.size());
                 for (int i = 0; i < n; i++) {
                     final PinnedDeckClient.TodoItem ti = st.todos.get(i);
-                    TextView row = makeWidgetRow((ti.done ? "☑  " : "☐  ") + ti.text, ti.done);
-                    row.setOnClickListener(v -> {
-                        v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(60)
-                                .withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(80).start()).start();
-                        sendAsync(() -> client.toggleTodo(ti.index));
-                    });
+                    View row = makeWidgetRow(ti.text,
+                            ti.done ? Icons.CHECK_SQUARE : Icons.SQUARE, ti.done);
+                    attachPressFeedback(row);
+                    row.setOnClickListener(v -> sendAsync(() -> client.toggleTodo(ti.index)));
                     nowWidgetContent.addView(row);
                 }
             }
@@ -713,9 +828,8 @@ public final class MainActivity extends Activity {
         } else {
             TextView badge = new TextView(this);
             badge.setText(sf.ext == null || sf.ext.isEmpty() ? "FILE" : (sf.ext.length() > 4 ? sf.ext.substring(0, 4) : sf.ext));
-            badge.setTextSize(10f);
+            Type.label(badge);
             badge.setGravity(Gravity.CENTER);
-            badge.getPaint().setFakeBoldText(true);
             badge.setTextColor(Color.WHITE);
             badge.setBackground(pillDrawable(Color.argb(65, Color.red(activeAccentColor), Color.green(activeAccentColor), Color.blue(activeAccentColor)),
                     Color.argb(40, 255, 255, 255), 10));
@@ -728,27 +842,24 @@ public final class MainActivity extends Activity {
         meta.setOrientation(LinearLayout.VERTICAL);
         TextView tvName = new TextView(this);
         tvName.setText(sf.name);
-        tvName.setTextSize(12.5f);
+        Type.style(tvName, 12.5f, Type.MEDIUM, 0f);
         tvName.setSingleLine(true);
-        tvName.getPaint().setFakeBoldText(true);
-        tvName.setTextColor(Color.WHITE);
+        tvName.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        tvName.setTextColor(surfaceInk());
         meta.addView(tvName);
 
         long kb = Math.max(1L, sf.sizeBytes / 1024L);
         TextView tvSub = new TextView(this);
-        tvSub.setText((sf.isImage ? "Image · " : "") + kb + " KB · Tap to Download or Copy");
-        tvSub.setTextSize(10.5f);
+        tvSub.setText((sf.isImage ? "Image · " : "") + kb + " KB · Tap to download or copy");
+        Type.caption(tvSub);
         tvSub.setSingleLine(true);
-        tvSub.setTextColor(Color.argb(160, 210, 220, 232));
+        tvSub.setTextColor(mutedInk());
         meta.addView(tvSub);
 
         row.addView(meta, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        row.setOnClickListener(v -> {
-            v.animate().scaleX(0.97f).scaleY(0.97f).setDuration(60)
-                    .withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(80).start()).start();
-            showShelfItemActions(sf, thumbBmp);
-        });
+        attachPressFeedback(row);
+        row.setOnClickListener(v -> showShelfItemActions(sf, thumbBmp));
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -796,7 +907,7 @@ public final class MainActivity extends Activity {
                 .setNeutralButton("Copy", (d, w) -> {
                     try {
                         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("NotchPixel Shelf", sf.name));
+                        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("OpenPixel Shelf", sf.name));
                         Toast.makeText(this, "Copied to clipboard", Toast.LENGTH_SHORT).show();
                     } catch (Exception ignored) {}
                 })
@@ -810,7 +921,7 @@ public final class MainActivity extends Activity {
                 android.content.ContentValues cv = new android.content.ContentValues();
                 cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName);
                 cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, isImage ? "image/*" : "application/octet-stream");
-                cv.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/NotchPixel");
+                cv.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/OpenPixel");
                 android.net.Uri uri = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
                 if (uri == null) return false;
                 try (java.io.OutputStream os = getContentResolver().openOutputStream(uri)) {
@@ -820,7 +931,7 @@ public final class MainActivity extends Activity {
                 return true;
             } else {
                 java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
-                        android.os.Environment.DIRECTORY_DOWNLOADS), "NotchPixel");
+                        android.os.Environment.DIRECTORY_DOWNLOADS), "OpenPixel");
                 dir.mkdirs();
                 java.io.File out = new java.io.File(dir, fileName);
                 try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
@@ -836,22 +947,38 @@ public final class MainActivity extends Activity {
     private TextView makeWidgetEmptyRow(String msg) {
         TextView tv = new TextView(this);
         tv.setText(msg);
-        tv.setTextSize(12f);
-        tv.setTextColor(Color.argb(145, 215, 222, 232));
+        Type.caption(tv);
+        tv.setTextColor(mutedInk());
         tv.setPadding(Math.round(dp(4)), Math.round(dp(4)), Math.round(dp(4)), Math.round(dp(4)));
         return tv;
     }
 
-    private TextView makeWidgetRow(String text, boolean done) {
-        TextView row = new TextView(this);
-        row.setText(text);
-        row.setTextSize(12.5f);
-        row.setSingleLine(true);
-        row.setTextColor(done ? Color.argb(145, 200, 208, 220) : Color.WHITE);
+    private View makeWidgetRow(String text, String icon, boolean done) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
         row.setBackground(pillDrawable(
-                done ? Color.argb(24, 48, 209, 88) : Color.argb(28, 255, 255, 255),
-                Color.argb(24, 255, 255, 255), 12));
-        row.setPadding(Math.round(dp(12)), Math.round(dp(9)), Math.round(dp(12)), Math.round(dp(9)));
+                done ? (lightSurface ? Color.argb(24, 30, 150, 80) : Color.argb(26, 48, 209, 88))
+                     : (lightSurface ? Color.argb(18, 12, 16, 22) : Color.argb(24, 255, 255, 255)),
+                lightSurface ? Color.argb(24, 12, 16, 22) : Color.argb(20, 255, 255, 255), 12));
+        row.setPadding(Math.round(dp(11)), Math.round(dp(9)), Math.round(dp(12)), Math.round(dp(9)));
+
+        IconView mark = new IconView(this, icon, 15f,
+                done ? Color.rgb(48, 209, 88) : mutedInk());
+        row.addView(mark);
+
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        Type.body(tv);
+        tv.setSingleLine(true);
+        tv.setTextColor(done
+                ? (lightSurface ? Color.argb(150, 40, 48, 60) : Color.argb(158, 200, 208, 220))
+                : surfaceInk());
+        LinearLayout.LayoutParams tLp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        tLp.leftMargin = Math.round(dp(9));
+        row.addView(tv, tLp);
+
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = Math.round(dp(6));
@@ -894,9 +1021,11 @@ public final class MainActivity extends Activity {
         LinearLayout typeRow = new LinearLayout(this);
         typeRow.setOrientation(LinearLayout.HORIZONTAL);
         etPadType = new EditText(this);
-        etPadType.setHint("Type to PC...");
+        etPadType.setHint("Type to PC");
         etPadType.setSingleLine(true);
-        etPadType.setTextSize(14f);
+        Type.body(etPadType);
+        etPadType.setTextColor(surfaceInk());
+        etPadType.setHintTextColor(mutedInk());
         etPadType.setImeOptions(EditorInfo.IME_ACTION_SEND);
         etPadType.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE) {
@@ -907,19 +1036,30 @@ public final class MainActivity extends Activity {
         });
         typeRow.addView(etPadType, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button btnSendType = makeActionBtn("Send", Color.rgb(43, 228, 234), Color.rgb(8, 12, 16));
-        btnSendType.setOnClickListener(v -> sendPadTypedText());
+        IconButtonView btnSendType = makeIconButton(Icons.SEND, "Send",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_PRIMARY);
+        btnSendType.setIconSizeDp(15f);
+        btnSendType.setLabelSizeSp(12f);
+        btnSendType.setMinHeightDp(40f);
+        btnSendType.setPaddingDp(11f);
+        btnSendType.setOnActionListener(this::sendPadTypedText);
         typeRow.addView(btnSendType);
         kbCard.addView(typeRow);
 
         LinearLayout clipRow = new LinearLayout(this);
         clipRow.setOrientation(LinearLayout.HORIZONTAL);
         clipRow.setPadding(0, Math.round(dp(8)), 0, Math.round(dp(10)));
-        String[][] clips = {{"Copy", "copy"}, {"Paste", "paste"}, {"Undo", "undo"}};
+        String[][] clips = {{"Copy", "copy", Icons.COPY}, {"Paste", "paste", Icons.PASTE}, {"Undo", "undo", Icons.UNDO}};
         for (int i = 0; i < clips.length; i++) {
             final String act = clips[i][1];
-            Button b = makeActionBtn(clips[i][0], Color.rgb(32, 37, 47), Color.WHITE);
-            b.setOnClickListener(v -> sendAsync(() -> client.sendPadAction("a=" + act)));
+            IconButtonView b = makeIconButton(clips[i][2], clips[i][0],
+                    IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_NEUTRAL);
+            b.setIconSizeDp(14f);
+            b.setGapDp(6f);
+            b.setLabelSizeSp(11.5f);
+            b.setPaddingDp(6f);
+            b.setMinHeightDp(40f);
+            b.setOnActionListener(() -> sendAsync(() -> client.sendPadAction("a=" + act)));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
             if (i < clips.length - 1) lp.rightMargin = Math.round(dp(6));
             clipRow.addView(b, lp);
@@ -930,7 +1070,9 @@ public final class MainActivity extends Activity {
         String[] speedNames = {"Slow", "Normal", "Fast", "Faster"};
         TextView tvPs = new TextView(this);
         tvPs.setText("Pointer speed");
-        tvPs.setTextSize(12f);
+        Type.caption(tvPs);
+        tvPs.setTextColor(mutedInk());
+        tvPs.setPadding(0, 0, 0, Math.round(dp(6)));
         kbCard.addView(tvPs);
         LinearLayout psRow = new LinearLayout(this);
         psRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -946,8 +1088,9 @@ public final class MainActivity extends Activity {
 
         TextView tvSs = new TextView(this);
         tvSs.setText("Two-finger scroll speed");
-        tvSs.setTextSize(12f);
-        tvSs.setPadding(0, Math.round(dp(8)), 0, 0);
+        Type.caption(tvSs);
+        tvSs.setTextColor(mutedInk());
+        tvSs.setPadding(0, Math.round(dp(8)), 0, Math.round(dp(6)));
         kbCard.addView(tvSs);
         LinearLayout ssRow = new LinearLayout(this);
         ssRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -989,13 +1132,13 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < 4; i++) {
             boolean pSel = store.getPadSpeed() == i;
             padSpeedBtns[i].setBackground(pillDrawable(
-                    pSel ? Color.rgb(43, 228, 234) : Color.rgb(32, 37, 47), Color.TRANSPARENT, 12));
-            padSpeedBtns[i].setTextColor(pSel ? Color.rgb(8, 12, 16) : Color.WHITE);
+                    pSel ? activeAccentColor : neutralFill(), Color.TRANSPARENT, 10));
+            padSpeedBtns[i].setTextColor(pSel ? Color.rgb(8, 12, 16) : surfaceInk());
 
             boolean sSel = store.getScrollSpeed() == i;
             scrollSpeedBtns[i].setBackground(pillDrawable(
-                    sSel ? Color.rgb(43, 228, 234) : Color.rgb(32, 37, 47), Color.TRANSPARENT, 12));
-            scrollSpeedBtns[i].setTextColor(sSel ? Color.rgb(8, 12, 16) : Color.WHITE);
+                    sSel ? activeAccentColor : neutralFill(), Color.TRANSPARENT, 10));
+            scrollSpeedBtns[i].setTextColor(sSel ? Color.rgb(8, 12, 16) : surfaceInk());
         }
     }
 
@@ -1019,10 +1162,14 @@ public final class MainActivity extends Activity {
         hdr.getPaint().setFakeBoldText(true);
         appsCardHeader.addView(hdr, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        btnDeckFullscreen = makeActionBtn("⛶ Landscape Deck", Color.argb(44, 255, 255, 255), Color.WHITE);
-        btnDeckFullscreen.setTextSize(11.5f);
-        btnDeckFullscreen.setPadding(Math.round(dp(12)), Math.round(dp(7)), Math.round(dp(12)), Math.round(dp(7)));
-        btnDeckFullscreen.setOnClickListener(v -> toggleDeckFullscreen());
+        btnDeckFullscreen = makeIconButton(Icons.EXPAND, "Landscape",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_NEUTRAL);
+        btnDeckFullscreen.setIconSizeDp(14f);
+        btnDeckFullscreen.setLabelSizeSp(11f);
+        btnDeckFullscreen.setGapDp(6f);
+        btnDeckFullscreen.setPaddingDp(10f);
+        btnDeckFullscreen.setMinHeightDp(36f);
+        btnDeckFullscreen.setOnActionListener(this::toggleDeckFullscreen);
         appsCardHeader.addView(btnDeckFullscreen);
         card.addView(appsCardHeader);
 
@@ -1041,21 +1188,37 @@ public final class MainActivity extends Activity {
         deckSidebar.setVisibility(View.GONE);
         deckSidebar.setPadding(Math.round(dp(10)), 0, 0, 0);
 
-        btnSideAudioMute = makeActionBtn("🔊 Mute Audio", Color.argb(56, 245, 166, 35), Color.WHITE);
-        btnSideAudioMute.setTextSize(11.5f);
-        btnSideAudioMute.setOnClickListener(v -> sendAsync(() -> client.sendMediaAction("a=mute")));
+                btnSideAudioMute = makeIconButton(Icons.VOLUME, "Mute audio",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_NEUTRAL);
+        btnSideAudioMute.setIconSizeDp(15f);
+        btnSideAudioMute.setGapDp(7f);
+        btnSideAudioMute.setLabelSizeSp(11f);
+        btnSideAudioMute.setPaddingDp(10f);
+        btnSideAudioMute.setOnActionListener(() -> sendAsync(() -> client.sendMediaAction("a=mute")));
 
-        btnSideMicMute = makeActionBtn("🎙 Mute Mic", Color.argb(62, 235, 72, 88), Color.WHITE);
-        btnSideMicMute.setTextSize(11.5f);
-        btnSideMicMute.setOnClickListener(v -> sendAsync(() -> client.sendModeAction("mic")));
+        btnSideMicMute = makeIconButton(Icons.MIC_OFF, "Mute mic",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_NEUTRAL);
+        btnSideMicMute.setIconSizeDp(15f);
+        btnSideMicMute.setGapDp(7f);
+        btnSideMicMute.setLabelSizeSp(11f);
+        btnSideMicMute.setPaddingDp(10f);
+        btnSideMicMute.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("mic")));
 
-        btnSideTestAudio = makeActionBtn("♪ Test Audio", Color.argb(56, 56, 178, 242), Color.WHITE);
-        btnSideTestAudio.setTextSize(11.5f);
-        btnSideTestAudio.setOnClickListener(v -> sendAsync(() -> client.testAudio()));
+        btnSideTestAudio = makeIconButton(Icons.MUSIC, "Test audio",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_NEUTRAL);
+        btnSideTestAudio.setIconSizeDp(15f);
+        btnSideTestAudio.setGapDp(7f);
+        btnSideTestAudio.setLabelSizeSp(11f);
+        btnSideTestAudio.setPaddingDp(10f);
+        btnSideTestAudio.setOnActionListener(() -> sendAsync(() -> client.testAudio()));
 
-        Button btnSideExit = makeActionBtn("✕ Exit Deck", Color.argb(48, 255, 255, 255), Color.WHITE);
-        btnSideExit.setTextSize(11.5f);
-        btnSideExit.setOnClickListener(v -> toggleDeckFullscreen());
+        IconButtonView btnSideExit = makeIconButton(Icons.CLOSE, "Exit deck",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_NEUTRAL);
+        btnSideExit.setIconSizeDp(15f);
+        btnSideExit.setGapDp(7f);
+        btnSideExit.setLabelSizeSp(11f);
+        btnSideExit.setPaddingDp(10f);
+        btnSideExit.setOnActionListener(this::toggleDeckFullscreen);
 
         LinearLayout.LayoutParams sbLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, Math.round(dp(44)));
@@ -1070,8 +1233,12 @@ public final class MainActivity extends Activity {
                 Math.round(dp(138)), LinearLayout.LayoutParams.WRAP_CONTENT));
         card.addView(deckSplitRow);
 
-        btnAddSlotRef = makeActionBtn("+ Pin App to Deck", activeAccentColor, Color.rgb(8, 12, 16));
-        btnAddSlotRef.setOnClickListener(v -> showAddAppDialog());
+        btnAddSlotRef = makeIconButton(Icons.PLUS, "Pin app to deck",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_PRIMARY);
+        btnAddSlotRef.setIconSizeDp(15f);
+        btnAddSlotRef.setLabelSizeSp(12f);
+        btnAddSlotRef.setMinHeightDp(44f);
+        btnAddSlotRef.setOnActionListener(this::showAddAppDialog);
         LinearLayout.LayoutParams aLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         aLp.topMargin = Math.round(dp(14));
@@ -1146,14 +1313,11 @@ public final class MainActivity extends Activity {
             bLp.bottomMargin = Math.round(dp(deckFullscreen ? 4 : 7));
             key.addView(iv, bLp);
         } else {
-            TextView badge = new TextView(this);
-            badge.setText(iconGlyph);
-            badge.setGravity(Gravity.CENTER);
-            badge.setTextSize(deckFullscreen ? 16f : 19f);
-            badge.setTextColor(Color.WHITE);
+            IconView badge = new IconView(this, iconGlyph,
+                    deckFullscreen ? 21f : 23f, Color.WHITE);
             badge.setBackground(pillDrawable(
-                    configured ? badgeColor : Color.argb(40, 140, 150, 165),
-                    Color.argb(65, 255, 255, 255), 12));
+                    configured ? badgeColor : Color.argb(32, 150, 160, 176),
+                    Color.argb(56, 255, 255, 255), 12));
             LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(iconSz, iconSz);
             bLp.bottomMargin = Math.round(dp(deckFullscreen ? 4 : 7));
             key.addView(badge, bLp);
@@ -1161,21 +1325,18 @@ public final class MainActivity extends Activity {
 
         TextView tv = new TextView(this);
         tv.setText(label);
-        tv.setTextSize(deckFullscreen ? 10.5f : 11f);
+        Type.style(tv, deckFullscreen ? 10.5f : 11f,
+                configured ? Type.MEDIUM : Type.REGULAR, 0.01f);
         tv.setSingleLine(true);
+        tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
         tv.setGravity(Gravity.CENTER);
-        tv.getPaint().setFakeBoldText(configured);
         tv.setTextColor(configured
                 ? (lightSurface ? Color.rgb(16, 18, 22) : Color.WHITE)
                 : (lightSurface ? Color.rgb(110, 115, 125) : Color.argb(145, 210, 218, 228)));
         key.addView(tv);
 
-        key.setOnClickListener(v -> {
-            v.animate().scaleX(0.91f).scaleY(0.91f).setDuration(60)
-                    .withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(90).start())
-                    .start();
-            onTap.run();
-        });
+        attachPressFeedback(key);
+        key.setOnClickListener(v -> onTap.run());
 
         GridLayout.LayoutParams glp = new GridLayout.LayoutParams();
         glp.width = 0;
@@ -1193,13 +1354,13 @@ public final class MainActivity extends Activity {
                 Color.rgb(43, 180, 234), Color.rgb(122, 92, 245), Color.rgb(48, 209, 88),
                 Color.rgb(255, 149, 0), Color.rgb(255, 69, 98), Color.rgb(10, 132, 255)
         };
-        String[] glyphs = {"⌘", "⚡", "▶", "✦", "◈", "◎"};
+        String[] glyphs = {Icons.GAMEPAD, Icons.GRID, Icons.FILM, Icons.MUSIC, Icons.PRESENT, Icons.MONITOR};
         for (int i = 0; i < 6; i++) {
             final int slotIdx = i;
             PinnedDeckClient.AppSlot slot = i < lastState.apps.size() ? lastState.apps.get(i) : null;
             boolean cfg = slot != null && slot.configured;
             String label = cfg ? slot.label : ("Slot " + (i + 1));
-            String glyph = cfg && label.length() > 0 ? label.substring(0, 1).toUpperCase(Locale.US) : glyphs[i];
+            String glyph = glyphs[i];
             String iconB64 = cfg ? slot.iconB64 : "";
             appsGrid.addView(makeStreamDeckKey(glyph, iconB64, label, palette[i % palette.length], cfg, () -> {
                 if (cfg) sendAsync(() -> client.launchAppSlot(slotIdx));
@@ -1208,18 +1369,22 @@ public final class MainActivity extends Activity {
         }
         // In portrait mode show built-in quick actions row; in landscape fullscreen they live in the right sidebar (zero scroll!)
         if (!deckFullscreen) {
-            appsGrid.addView(makeStreamDeckKey("🎙", "", lastState.micMuted ? "Unmute Mic" : "Mute Mic",
-                    Color.rgb(235, 72, 88), true, () -> sendAsync(() -> client.sendModeAction("mic"))));
-            appsGrid.addView(makeStreamDeckKey("📸", "", "Screenshot",
-                    Color.rgb(56, 178, 242), true, () -> sendAsync(() -> client.sendModeAction("screenshot"))));
-            appsGrid.addView(makeStreamDeckKey("🔊", "", lastState.muted ? "Unmute PC" : "Mute PC",
-                    Color.rgb(245, 166, 35), true, () -> sendAsync(() -> client.sendMediaAction("a=mute"))));
+            appsGrid.addView(makeStreamDeckKey(lastState.micMuted ? Icons.MIC : Icons.MIC_OFF,
+                    "", lastState.micMuted ? "Unmute mic" : "Mute mic",
+                    Color.rgb(214, 66, 82), true, () -> sendAsync(() -> client.sendModeAction("mic"))));
+            appsGrid.addView(makeStreamDeckKey(Icons.CAMERA, "", "Screenshot",
+                    Color.rgb(56, 148, 226), true, () -> sendAsync(() -> client.sendModeAction("screenshot"))));
+            appsGrid.addView(makeStreamDeckKey(lastState.muted ? Icons.VOLUME : Icons.VOLUME_OFF,
+                    "", lastState.muted ? "Unmute audio" : "Mute audio",
+                    Color.rgb(230, 156, 48), true, () -> sendAsync(() -> client.sendMediaAction("a=mute"))));
         }
         if (btnSideAudioMute != null) {
-            btnSideAudioMute.setText(lastState.muted ? "🔇 Unmute PC" : "🔊 Mute Audio");
+            btnSideAudioMute.setContent(lastState.muted ? Icons.VOLUME_OFF : Icons.VOLUME,
+                    lastState.muted ? "Unmute audio" : "Mute audio");
         }
         if (btnSideMicMute != null) {
-            btnSideMicMute.setText(lastState.micMuted ? "🎙 Unmute Mic" : "🎙 Mute Mic");
+            btnSideMicMute.setContent(lastState.micMuted ? Icons.MIC : Icons.MIC_OFF,
+                    lastState.micMuted ? "Unmute mic" : "Mute mic");
         }
     }
 
@@ -1271,132 +1436,171 @@ public final class MainActivity extends Activity {
         switchModeSub(0);
     }
 
+    private IconButtonView makeDeckTile(String icon, String label) {
+        IconButtonView tile = makeIconButton(icon, label, IconButtonView.ICON_LABEL_VERTICAL, ROLE_NEUTRAL);
+        tile.setIconSizeDp(20f);
+        tile.setLabelSizeSp(10.5f);
+        tile.setMinHeightDp(66f);
+        tile.setPaddingDp(6f);
+        return tile;
+    }
+
+    private void addDeckTile(GridLayout grid, IconButtonView tile) {
+        GridLayout.LayoutParams glp = new GridLayout.LayoutParams();
+        glp.width = 0;
+        glp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
+        glp.height = Math.round(dp(72));
+        int m = Math.round(dp(4));
+        glp.setMargins(m, m, m, m);
+        grid.addView(tile, glp);
+    }
+
     private void switchModeSub(int idx) {
         activeModeSub = idx;
         for (int i = 0; i < 4; i++) {
             boolean sel = i == idx;
             modeSubBtns[i].setBackground(pillDrawable(
-                    sel ? Color.rgb(43, 228, 234) : Color.rgb(30, 35, 44), Color.TRANSPARENT, 14));
-            modeSubBtns[i].setTextColor(sel ? Color.rgb(8, 12, 16) : Color.WHITE);
+                    sel ? activeAccentColor : neutralFill(), Color.TRANSPARENT, 10));
+            modeSubBtns[i].setTextColor(sel ? Color.rgb(8, 12, 16) : surfaceInk());
         }
         modeSubHost.removeAllViews();
         btnGameRecord = null;
         LinearLayout card = makeCardContainer();
 
         if (idx == 0) {
-            // Game mode 3x2 deck
+            // Game mode: a 3x2 key deck.
             tvRecTimer = new TextView(this);
-            tvRecTimer.setText(lastState.recording ? ("Recording  " + fmtSec(lastState.recordingSec)) : "Game Deck Ready");
-            tvRecTimer.setTextColor(lastState.recording ? Color.rgb(242, 72, 72) : Color.rgb(43, 228, 234));
-            tvRecTimer.getPaint().setFakeBoldText(true);
-            tvRecTimer.setPadding(0, 0, 0, Math.round(dp(10)));
+            tvRecTimer.setText(lastState.recording
+                    ? ("Recording  " + fmtSec(lastState.recordingSec)) : "Ready");
+            Type.headline(tvRecTimer);
+            tvRecTimer.setTextColor(lastState.recording ? Color.rgb(242, 72, 72) : activeAccentColor);
+            tvRecTimer.setPadding(0, 0, 0, Math.round(dp(12)));
             card.addView(tvRecTimer);
 
             GridLayout grid = new GridLayout(this);
             grid.setColumnCount(3);
-            grid.setUseDefaultMargins(true);
-            String[][] items = {
-                    {"Game Bar", "gamebar"},
-                    {"Screenshot", "screenshot"},
-                    {"Save Clip", "clip"},
-                    {"Record / Stop", "record"},
-                    {"Switch", "switch"},
-                    {"Mic Mute", "mic"}
-            };
-            for (final String[] it : items) {
-                Button b = makeActionBtn(it[0],
-                        "record".equals(it[1]) && lastState.recording ? Color.rgb(210, 48, 48) : Color.rgb(34, 40, 50),
-                        Color.WHITE);
-                if ("record".equals(it[1])) btnGameRecord = b;
-                b.setOnClickListener(v -> sendAsync(() -> client.sendModeAction(it[1])));
-                GridLayout.LayoutParams glp = new GridLayout.LayoutParams();
-                glp.width = 0;
-                glp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
-                glp.height = Math.round(dp(64));
-                grid.addView(b, glp);
-            }
+            grid.setUseDefaultMargins(false);
+
+            IconButtonView gameBar = makeDeckTile(Icons.SLIDERS, "Game bar");
+            gameBar.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("gamebar")));
+            addDeckTile(grid, gameBar);
+
+            IconButtonView shot = makeDeckTile(Icons.CAMERA, "Screenshot");
+            shot.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("screenshot")));
+            addDeckTile(grid, shot);
+
+            IconButtonView saveClip = makeDeckTile(Icons.FILE, "Save clip");
+            saveClip.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("clip")));
+            addDeckTile(grid, saveClip);
+
+            btnGameRecord = makeDeckTile(Icons.RECORD, lastState.recording ? "Stop" : "Record");
+            btnGameRecord.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("record")));
+            addDeckTile(grid, btnGameRecord);
+
+            IconButtonView switchTask = makeDeckTile(Icons.MONITOR, "Switch");
+            switchTask.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("switch")));
+            addDeckTile(grid, switchTask);
+
+            IconButtonView micTile = makeDeckTile(Icons.MIC_OFF, "Mute mic");
+            micTile.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("mic")));
+            addDeckTile(grid, micTile);
+
             card.addView(grid);
         } else if (idx == 1) {
-            // Present / Slideshow
+            // Present / slideshow
             tvPresentTimer = new TextView(this);
             long el = presentingActive ? (System.currentTimeMillis() - presentStartMs) / 1000L : 0L;
-            tvPresentTimer.setText("Presentation Timer: " + fmtSec((int) el));
-            tvPresentTimer.setTextColor(Color.rgb(43, 228, 234));
-            tvPresentTimer.getPaint().setFakeBoldText(true);
-            tvPresentTimer.setPadding(0, 0, 0, Math.round(dp(10)));
+            tvPresentTimer.setText("Elapsed  " + fmtSec((int) el));
+            Type.headline(tvPresentTimer);
+            tvPresentTimer.setTextColor(activeAccentColor);
+            tvPresentTimer.setPadding(0, 0, 0, Math.round(dp(12)));
             card.addView(tvPresentTimer);
 
             GridLayout grid = new GridLayout(this);
             grid.setColumnCount(2);
-            grid.setUseDefaultMargins(true);
-            String[][] items = {
-                    {"Start Slides (F5)", "slide_start"},
-                    {"End (Esc)", "slide_end"},
-                    {"Back", "slide_prev"},
-                    {"Next", "slide_next"},
-                    {"Black Screen (B)", "slide_black"}
-            };
-            for (final String[] it : items) {
-                Button b = makeActionBtn(it[0], Color.rgb(34, 40, 50), Color.WHITE);
-                b.setOnClickListener(v -> {
-                    if ("slide_start".equals(it[1])) {
-                        presentingActive = true;
-                        presentStartMs = System.currentTimeMillis();
-                    } else if ("slide_end".equals(it[1])) {
-                        presentingActive = false;
-                    }
-                    sendAsync(() -> client.sendModeAction(it[1]));
-                });
-                GridLayout.LayoutParams glp = new GridLayout.LayoutParams();
-                glp.width = 0;
-                glp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
-                glp.height = Math.round(dp(62));
-                grid.addView(b, glp);
-            }
+            grid.setUseDefaultMargins(false);
+
+            IconButtonView start = makeDeckTile(Icons.PRESENT, "Start slides");
+            start.setOnActionListener(() -> {
+                presentingActive = true;
+                presentStartMs = System.currentTimeMillis();
+                sendAsync(() -> client.sendModeAction("slide_start"));
+            });
+            addDeckTile(grid, start);
+
+            IconButtonView end = makeDeckTile(Icons.CLOSE, "End");
+            end.setOnActionListener(() -> {
+                presentingActive = false;
+                sendAsync(() -> client.sendModeAction("slide_end"));
+            });
+            addDeckTile(grid, end);
+
+            IconButtonView back = makeDeckTile(Icons.CHEVRON_LEFT, "Back");
+            back.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("slide_prev")));
+            addDeckTile(grid, back);
+
+            IconButtonView next = makeDeckTile(Icons.CHEVRON_RIGHT, "Next");
+            next.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("slide_next")));
+            addDeckTile(grid, next);
+
+            IconButtonView black = makeDeckTile(Icons.MOON, "Black screen");
+            black.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("slide_black")));
+            addDeckTile(grid, black);
+
             card.addView(grid);
         } else if (idx == 2) {
             // Movie mode
             GridLayout grid = new GridLayout(this);
             grid.setColumnCount(2);
-            grid.setUseDefaultMargins(true);
-            String[][] items = {
-                    {"Play / Pause", "movie_play"},
-                    {"Fullscreen", "movie_full"},
-                    {"Skip Back 10s", "movie_back"},
-                    {"Skip Fwd 10s", "movie_fwd"},
-                    {"Mute Audio", "movie_mute"}
-            };
-            for (final String[] it : items) {
-                Button b = makeActionBtn(it[0], Color.rgb(34, 40, 50), Color.WHITE);
-                b.setOnClickListener(v -> sendAsync(() -> client.sendModeAction(it[1])));
-                GridLayout.LayoutParams glp = new GridLayout.LayoutParams();
-                glp.width = 0;
-                glp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
-                glp.height = Math.round(dp(62));
-                grid.addView(b, glp);
-            }
+            grid.setUseDefaultMargins(false);
+
+            IconButtonView play = makeDeckTile(Icons.PLAY, "Play / pause");
+            play.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("movie_play")));
+            addDeckTile(grid, play);
+
+            IconButtonView full = makeDeckTile(Icons.EXPAND, "Fullscreen");
+            full.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("movie_full")));
+            addDeckTile(grid, full);
+
+            IconButtonView rewind = makeDeckTile(Icons.PREV, "Back 10s");
+            rewind.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("movie_back")));
+            addDeckTile(grid, rewind);
+
+            IconButtonView forward = makeDeckTile(Icons.NEXT, "Forward 10s");
+            forward.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("movie_fwd")));
+            addDeckTile(grid, forward);
+
+            IconButtonView mute = makeDeckTile(Icons.VOLUME_OFF, "Mute audio");
+            mute.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("movie_mute")));
+            addDeckTile(grid, mute);
+
             card.addView(grid);
         } else {
             // Work mode
             GridLayout grid = new GridLayout(this);
             grid.setColumnCount(2);
-            grid.setUseDefaultMargins(true);
-            String[][] items = {
-                    {"Copy (Ctrl+C)", "work_copy"},
-                    {"Paste (Ctrl+V)", "work_paste"},
-                    {"Undo (Ctrl+Z)", "work_undo"},
-                    {"Screenshot", "screenshot"},
-                    {"Mic Mute", "mic"}
-            };
-            for (final String[] it : items) {
-                Button b = makeActionBtn(it[0], Color.rgb(34, 40, 50), Color.WHITE);
-                b.setOnClickListener(v -> sendAsync(() -> client.sendModeAction(it[1])));
-                GridLayout.LayoutParams glp = new GridLayout.LayoutParams();
-                glp.width = 0;
-                glp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
-                glp.height = Math.round(dp(62));
-                grid.addView(b, glp);
-            }
+            grid.setUseDefaultMargins(false);
+
+            IconButtonView copy = makeDeckTile(Icons.COPY, "Copy");
+            copy.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("work_copy")));
+            addDeckTile(grid, copy);
+
+            IconButtonView paste = makeDeckTile(Icons.PASTE, "Paste");
+            paste.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("work_paste")));
+            addDeckTile(grid, paste);
+
+            IconButtonView undo = makeDeckTile(Icons.UNDO, "Undo");
+            undo.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("work_undo")));
+            addDeckTile(grid, undo);
+
+            IconButtonView shot = makeDeckTile(Icons.CAMERA, "Screenshot");
+            shot.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("screenshot")));
+            addDeckTile(grid, shot);
+
+            IconButtonView mic = makeDeckTile(Icons.MIC_OFF, "Mute mic");
+            mic.setOnActionListener(() -> sendAsync(() -> client.sendModeAction("mic")));
+            addDeckTile(grid, mic);
+
             card.addView(grid);
         }
         modeSubHost.addView(card);
@@ -1427,23 +1631,33 @@ public final class MainActivity extends Activity {
         // Power & Wake card
         LinearLayout powerCard = makeCardContainer();
         TextView pTitle = new TextView(this);
-        pTitle.setText("PC Power & Wake-on-LAN");
-        pTitle.setTextSize(14f);
-        pTitle.getPaint().setFakeBoldText(true);
+        pTitle.setText("Power & Wake-on-LAN");
+        Type.headline(pTitle);
+        pTitle.setTextColor(surfaceInk());
         powerCard.addView(pTitle);
 
         TextView pWarn = new TextView(this);
-        pWarn.setText("Restart & Shut down wait 30 seconds on Windows so you have time to save open work.");
-        pWarn.setTextSize(11.5f);
-        pWarn.setPadding(0, Math.round(dp(3)), 0, Math.round(dp(10)));
+        pWarn.setText("Restart and shut down wait 30 seconds on Windows so you can save open work.");
+        Type.caption(pWarn);
+        pWarn.setTextColor(mutedInk());
+        pWarn.setLineSpacing(dp(2), 1f);
+        pWarn.setPadding(0, Math.round(dp(4)), 0, Math.round(dp(12)));
         powerCard.addView(pWarn);
 
         LinearLayout quickPower = new LinearLayout(this);
         quickPower.setOrientation(LinearLayout.HORIZONTAL);
-        Button btnLock = makeActionBtn("Lock PC", Color.rgb(34, 41, 52), Color.WHITE);
-        btnLock.setOnClickListener(v -> sendAsync(() -> client.sendPowerAction("lock")));
-        Button btnWake = makeActionBtn("Wake PC", Color.rgb(26, 62, 70), Color.rgb(43, 228, 234));
-        btnWake.setOnClickListener(v -> cmdExecutor.execute(() -> {
+        IconButtonView btnLock = makeIconButton(Icons.LOCK, "Lock",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_NEUTRAL);
+        btnLock.setIconSizeDp(16f);
+        btnLock.setLabelSizeSp(12.5f);
+        btnLock.setMinHeightDp(44f);
+        btnLock.setOnActionListener(() -> sendAsync(() -> client.sendPowerAction("lock")));
+        IconButtonView btnWake = makeIconButton(Icons.POWER, "Wake",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_PRIMARY);
+        btnWake.setIconSizeDp(16f);
+        btnWake.setLabelSizeSp(12.5f);
+        btnWake.setMinHeightDp(44f);
+        btnWake.setOnActionListener(() -> cmdExecutor.execute(() -> {
             boolean udpOk = client.sendWakeUdp();
             boolean wolOk = WakeOnLanSender.sendMagicPacket(store.getMacAddress());
             boolean ok = udpOk || wolOk;
@@ -1461,8 +1675,11 @@ public final class MainActivity extends Activity {
         holdRow.setOrientation(LinearLayout.HORIZONTAL);
         holdRow.setPadding(0, Math.round(dp(10)), 0, 0);
         btnSleep = new HoldPowerButton(this, "Sleep", Color.rgb(75, 140, 240), () -> sendAsync(() -> client.sendPowerAction("sleep")));
+        btnSleep.setIcon(Icons.MOON);
         btnRestart = new HoldPowerButton(this, "Restart", Color.rgb(235, 165, 50), () -> sendAsync(() -> client.sendPowerAction("restart")));
+        btnRestart.setIcon(Icons.RESTART);
         btnShutdown = new HoldPowerButton(this, "Shut down", Color.rgb(235, 72, 72), () -> sendAsync(() -> client.sendPowerAction("shutdown")));
+        btnShutdown.setIcon(Icons.POWER);
         LinearLayout.LayoutParams hLp1 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         hLp1.rightMargin = Math.round(dp(6));
         LinearLayout.LayoutParams hLp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
@@ -1477,10 +1694,9 @@ public final class MainActivity extends Activity {
         LinearLayout syncCard = makeCardContainer();
         TextView tvShelfHdr = new TextView(this);
         tvShelfHdr.setText("PC Shelf");
-        tvShelfHdr.setTextSize(14f);
-        tvShelfHdr.setTextColor(Color.WHITE);
-        tvShelfHdr.getPaint().setFakeBoldText(true);
-        tvShelfHdr.setPadding(0, 0, 0, Math.round(dp(6)));
+        Type.headline(tvShelfHdr);
+        tvShelfHdr.setTextColor(surfaceInk());
+        tvShelfHdr.setPadding(0, 0, 0, Math.round(dp(8)));
         syncCard.addView(tvShelfHdr);
 
         shelfListBox = new LinearLayout(this);
@@ -1488,11 +1704,10 @@ public final class MainActivity extends Activity {
         syncCard.addView(shelfListBox);
 
         TextView tvClipHdr = new TextView(this);
-        tvClipHdr.setText("PC Clipboard (tap to copy to phone)");
-        tvClipHdr.setTextSize(14f);
-        tvClipHdr.setTextColor(Color.WHITE);
-        tvClipHdr.getPaint().setFakeBoldText(true);
-        tvClipHdr.setPadding(0, Math.round(dp(12)), 0, Math.round(dp(6)));
+        tvClipHdr.setText("PC Clipboard · tap to copy");
+        Type.headline(tvClipHdr);
+        tvClipHdr.setTextColor(surfaceInk());
+        tvClipHdr.setPadding(0, Math.round(dp(14)), 0, Math.round(dp(8)));
         syncCard.addView(tvClipHdr);
 
         clipListBox = new LinearLayout(this);
@@ -1505,16 +1720,19 @@ public final class MainActivity extends Activity {
         todoHdrRow.setGravity(Gravity.CENTER_VERTICAL);
         todoHdrRow.setPadding(0, Math.round(dp(12)), 0, Math.round(dp(6)));
         TextView tvTodoHdr = new TextView(this);
-        tvTodoHdr.setText("PC To-Do (synced)");
-        tvTodoHdr.setTextSize(14f);
-        tvTodoHdr.setTextColor(Color.WHITE);
-        tvTodoHdr.getPaint().setFakeBoldText(true);
+        tvTodoHdr.setText("PC To-Do");
+        Type.headline(tvTodoHdr);
+        tvTodoHdr.setTextColor(surfaceInk());
         todoHdrRow.addView(tvTodoHdr, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button btnAddTodo = makeActionBtn("+ Add", Color.argb(46, 255, 255, 255), Color.WHITE);
-        btnAddTodo.setTextSize(11f);
-        btnAddTodo.setPadding(Math.round(dp(10)), Math.round(dp(5)), Math.round(dp(10)), Math.round(dp(5)));
-        btnAddTodo.setOnClickListener(v -> {
+        IconButtonView btnAddTodo = makeIconButton(Icons.PLUS, "Add",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_NEUTRAL);
+        btnAddTodo.setIconSizeDp(13f);
+        btnAddTodo.setGapDp(5f);
+        btnAddTodo.setLabelSizeSp(11f);
+        btnAddTodo.setPaddingDp(9f);
+        btnAddTodo.setMinHeightDp(32f);
+        btnAddTodo.setOnActionListener(() -> {
             EditText et = new EditText(this);
             et.setHint("New task for PC To-Do...");
             new AlertDialog.Builder(this)
@@ -1538,9 +1756,9 @@ public final class MainActivity extends Activity {
         // Look & Personalization & Pairing card
         LinearLayout prefCard = makeCardContainer();
         TextView tvLook = new TextView(this);
-        tvLook.setText("Look");
-        tvLook.setTextSize(14f);
-        tvLook.getPaint().setFakeBoldText(true);
+        tvLook.setText("Appearance");
+        Type.headline(tvLook);
+        tvLook.setTextColor(surfaceInk());
         prefCard.addView(tvLook);
 
         LinearLayout lookRow = new LinearLayout(this);
@@ -1549,7 +1767,7 @@ public final class MainActivity extends Activity {
         String[] looks = {"Frosted", "Auto", "Dark", "Light"};
         for (int i = 0; i < 4; i++) {
             final String lm = looks[i];
-            Button b = makeActionBtn(lm, Color.rgb(32, 37, 47), Color.WHITE);
+            Button b = makeActionBtn(lm, neutralFill(), surfaceInk());
             b.setTextSize(12f);
             b.setOnClickListener(v -> { store.setLookMode(lm); applyLookTheme(); });
             lookButtons[i] = b;
@@ -1560,9 +1778,10 @@ public final class MainActivity extends Activity {
         prefCard.addView(lookRow);
 
         TextView tvGrad = new TextView(this);
-        tvGrad.setText("Background Gradient");
-        tvGrad.setTextSize(13f);
-        tvGrad.getPaint().setFakeBoldText(true);
+        tvGrad.setText("Background tint");
+        Type.caption(tvGrad);
+        tvGrad.setTextColor(mutedInk());
+        tvGrad.setPadding(0, Math.round(dp(6)), 0, 0);
         prefCard.addView(tvGrad);
 
         LinearLayout gradRow = new LinearLayout(this);
@@ -1571,7 +1790,7 @@ public final class MainActivity extends Activity {
         String[] grads = {"None", "Midnight", "Crimson", "Aurora", "Emerald"};
         for (int i = 0; i < 5; i++) {
             final String gp = grads[i];
-            Button b = makeActionBtn(gp, Color.rgb(32, 37, 47), Color.WHITE);
+            Button b = makeActionBtn(gp, neutralFill(), surfaceInk());
             b.setTextSize(10.5f);
             b.setPadding(Math.round(dp(2)), Math.round(dp(8)), Math.round(dp(2)), Math.round(dp(8)));
             b.setOnClickListener(v -> { store.setGradientPreset(gp); applyLookTheme(); });
@@ -1616,8 +1835,12 @@ public final class MainActivity extends Activity {
         tvPcTabNotice.setTextColor(Color.rgb(43, 228, 234));
         prefCard.addView(tvPcTabNotice);
 
-        Button btnForget = makeActionBtn("Forget this PC on this phone", Color.rgb(75, 28, 32), Color.rgb(255, 200, 200));
-        btnForget.setOnClickListener(v -> new AlertDialog.Builder(this)
+        IconButtonView btnForget = makeIconButton(Icons.CLOSE, "Forget this PC",
+                IconButtonView.ICON_LABEL_HORIZONTAL, ROLE_DANGER);
+        btnForget.setIconSizeDp(14f);
+        btnForget.setLabelSizeSp(12f);
+        btnForget.setMinHeightDp(44f);
+        btnForget.setOnActionListener(() -> new AlertDialog.Builder(this)
                 .setTitle("Forget paired PC?")
                 .setMessage("Notifies the PC to unpair this device and removes encrypted Keystore token and pinned PC certificate fingerprint from this phone.")
                 .setPositiveButton("Forget PC", (d, w) -> {
@@ -1648,33 +1871,49 @@ public final class MainActivity extends Activity {
             boolean paired = store.isPaired();
             btnQuickPair.setText(paired ? "Paired" : "Pair PC");
             btnQuickPair.setBackground(pillDrawable(
-                    paired ? Color.argb(28, 255, 255, 255) : Color.rgb(239, 237, 232),
-                    paired ? Color.argb(36, 255, 255, 255) : Color.TRANSPARENT,
+                    paired ? Color.argb(24, 255, 255, 255) : Color.rgb(239, 237, 232),
+                    paired ? Color.argb(30, 255, 255, 255) : Color.TRANSPARENT,
                     16));
             btnQuickPair.setTextColor(paired ? Color.rgb(239, 237, 232) : Color.rgb(12, 12, 14));
         }
+        String summary;
         if (store.isPaired()) {
             String fp = store.getCertFingerprint();
             String shortFp = fp.length() > 16 ? (fp.substring(0, 16) + "...") : fp;
-            tvPairedSummary.setText("Paired: " + store.getPcName() + " (" + store.getPcIp() + ":" + store.getTlsPort() + ")\nCert SHA-256: " + shortFp);
+            summary = "Paired: " + store.getPcName() + " (" + store.getPcIp() + ":" + store.getTlsPort()
+                    + ")\nCert SHA-256: " + shortFp;
         } else {
-            tvPairedSummary.setText("No paired Windows PC.");
+            summary = "No paired Windows PC.";
         }
+        // Re-setting this text every poll would relayout the PC tab once a second.
+        if (summary.equals(lastPairingSig) && tvPairedSummary.length() > 0) return;
+        lastPairingSig = summary;
+        tvPairedSummary.setText(summary);
+        Type.caption(tvPairedSummary);
+        tvPairedSummary.setTextColor(mutedInk());
+        tvPairedSummary.setLineSpacing(dp(2), 1f);
     }
 
     private void switchTab(int idx) {
         activeTab = idx;
         if (bottomTabBar != null) bottomTabBar.setSelectedTab(idx, true);
         View[] tabs = new View[]{tabNow, tabPad, tabApps, tabModes, tabPc};
+        boolean reduced = Motion.reduced();
         for (int i = 0; i < tabs.length; i++) {
             boolean show = (i == idx);
             tabs[i].setVisibility(show ? View.VISIBLE : View.GONE);
+            tabs[i].animate().cancel();
             if (show) {
-                tabs[i].setAlpha(0f);
-                tabs[i].animate().alpha(1f).setDuration(140).start();
+                if (reduced) {
+                    tabs[i].setAlpha(1f);
+                } else {
+                    tabs[i].setAlpha(0f);
+                    tabs[i].animate().alpha(1f).setDuration(160).start();
+                }
             }
         }
-        applyLookTheme();
+        // Switching tabs does not change the theme; only the wave layer needs a nudge.
+        updateAudioWaveVisibility();
     }
 
     private static int parseHexColor(String hex, int fallback) {
@@ -1714,77 +1953,93 @@ public final class MainActivity extends Activity {
                 : activeAccentColor;
         int r = Color.red(baseAccent), g = Color.green(baseAccent), b = Color.blue(baseAccent);
 
-        if (lightSurface) {
-            GradientDrawable lightBg = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[]{
-                            Color.rgb(Math.min(255, 214 + r / 6), Math.min(255, 214 + g / 6), Math.min(255, 218 + b / 6)),
-                            Color.rgb(242, 243, 247),
-                            Color.rgb(232, 235, 242)
-                    });
-            ambientBackdrop.setBackground(lightBg);
-        } else if (hasMusicTint) {
-            // Vivid, unmistakable music-colored atmospheric gradient synced to playing song
-            GradientDrawable musicBg = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[]{
-                            Color.rgb(Math.min(255, 14 + (int) (r * 0.44f)), Math.min(255, 14 + (int) (g * 0.44f)), Math.min(255, 18 + (int) (b * 0.44f))),
-                            Color.rgb(Math.min(255, 12 + (int) (r * 0.20f)), Math.min(255, 12 + (int) (g * 0.20f)), Math.min(255, 16 + (int) (b * 0.20f))),
-                            Color.rgb(10, 11, 15)
-                    });
-            ambientBackdrop.setBackground(musicBg);
-        } else if (glassSurface) {
-            GradientDrawable glassBg = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[]{
-                            Color.rgb(14 + r / 7, 16 + g / 7, 22 + b / 7),
-                            Color.rgb(11 + r / 12, 13 + g / 12, 18 + b / 12),
-                            Color.rgb(9, 10, 14)
-                    });
-            ambientBackdrop.setBackground(glassBg);
-        } else {
-            ambientBackdrop.setBackgroundColor(Color.rgb(10, 11, 14));
-        }
+        // The backdrop is rebuilt only when its inputs actually change (not on every poll).
+        String ambientSig = lightSurface + "|" + glassSurface + "|" + hasMusicTint + "|" + baseAccent
+                + "|" + ambientBackdrop.getWidth() + "x" + ambientBackdrop.getHeight();
+        if (!ambientSig.equals(lastAmbientSig)) {
+            lastAmbientSig = ambientSig;
 
-        // Clean GPU blur without white glow wash
-        if (glassSurface) {
-            float blurPx = (lastState != null && lastState.themeBlurRadius > 4) ? lastState.themeBlurRadius * 1.2f : 22f;
-            int tint = lightSurface ? Color.argb(24, 255, 255, 255) : Color.argb(28, 6, 8, 12);
-            LiquidGlassHelper.applyBackdropLiquidEffect(ambientBackdrop, blurPx, dp(24), tint);
-        } else {
-            LiquidGlassHelper.clearEffect(ambientBackdrop);
+            if (lightSurface) {
+                ambientBackdrop.setBackground(new GradientDrawable(
+                        GradientDrawable.Orientation.TOP_BOTTOM,
+                        new int[]{
+                                Color.rgb(Math.min(255, 226 + r / 10), Math.min(255, 228 + g / 10),
+                                        Math.min(255, 234 + b / 10)),
+                                Color.rgb(244, 246, 250),
+                                Color.rgb(233, 236, 243)
+                        }));
+            } else if (hasMusicTint) {
+                // The playing track tints the room, kept deep enough for white text to stay legible.
+                ambientBackdrop.setBackground(new GradientDrawable(
+                        GradientDrawable.Orientation.TOP_BOTTOM,
+                        new int[]{
+                                Color.rgb(Math.min(255, 16 + (int) (r * 0.26f)),
+                                        Math.min(255, 17 + (int) (g * 0.26f)),
+                                        Math.min(255, 21 + (int) (b * 0.26f))),
+                                Color.rgb(Math.min(255, 12 + (int) (r * 0.11f)),
+                                        Math.min(255, 13 + (int) (g * 0.11f)),
+                                        Math.min(255, 17 + (int) (b * 0.11f))),
+                                Color.rgb(9, 10, 13)
+                        }));
+            } else if (glassSurface) {
+                ambientBackdrop.setBackground(new GradientDrawable(
+                        GradientDrawable.Orientation.TOP_BOTTOM,
+                        new int[]{
+                                Color.rgb(15 + r / 9, 17 + g / 9, 23 + b / 9),
+                                Color.rgb(11 + r / 14, 13 + g / 14, 18 + b / 14),
+                                Color.rgb(9, 10, 13)
+                        }));
+            } else {
+                ambientBackdrop.setBackgroundColor(Color.rgb(10, 11, 14));
+            }
+
+            if (glassSurface) {
+                float blurPx = (lastState != null && lastState.themeBlurRadius > 4)
+                        ? lastState.themeBlurRadius * 1.1f : 18f;
+                int tint = lightSurface ? Color.argb(18, 255, 255, 255) : Color.argb(22, 6, 8, 12);
+                LiquidGlassHelper.applyBackdropLiquidEffect(ambientBackdrop, blurPx, dp(22), tint);
+            } else {
+                LiquidGlassHelper.clearEffect(ambientBackdrop);
+            }
         }
 
         topPill.setBackground(pillDrawable(
-                lightSurface ? Color.rgb(18, 20, 24) : Color.rgb(10, 10, 12),
-                Color.argb(56, 255, 255, 255), 22));
+                lightSurface ? Color.rgb(18, 20, 24) : Color.rgb(11, 12, 16),
+                Color.argb(52, 255, 255, 255), 18));
         if (bottomTabBar != null) bottomTabBar.setStyle(glassSurface, lightSurface, activeAccentColor);
         for (LiquidGlassHelper.GlassContainer card : glassCards) {
             card.setGlassStyle(glassSurface, lightSurface, activeAccentColor);
         }
-        if (nowArtCard != null) {
+        String artSig = lightSurface + "|" + r + "|" + g + "|" + b;
+        if (nowArtCard != null && !artSig.equals(lastArtCardSig)) {
+            lastArtCardSig = artSig;
             int artFill = lightSurface
-                    ? Color.argb(210, 220 + r / 8, 220 + g / 8, 224 + b / 8)
-                    : Color.argb(190, 16 + r / 4, 18 + g / 4, 24 + b / 4);
-            nowArtCard.setBackground(pillDrawable(artFill, Color.argb(50, 255, 255, 255), 24));
+                    ? Color.argb(208, 226 + r / 10, 228 + g / 10, 232 + b / 10)
+                    : Color.argb(188, 18 + r / 5, 20 + g / 5, 26 + b / 5);
+            nowArtCard.setBackground(pillDrawable(artFill, Color.argb(38, 255, 255, 255), 24));
+            if (ivNowIcon != null) {
+                ivNowIcon.setColor(lightSurface
+                        ? Color.argb(150, 40, 46, 58) : Color.argb(180, 236, 240, 246));
+            }
         }
 
-        int textMain = lightSurface ? Color.rgb(14, 15, 18) : Color.rgb(242, 241, 238);
-        int textMuted = lightSurface ? Color.rgb(92, 96, 106) : Color.argb(185, 235, 236, 240);
+        int textMain = surfaceInk();
+        int textMuted = mutedInk();
         tvTopStatus.setTextColor(Color.rgb(242, 241, 238));
+        tvMediaApp.setTextColor(mutedInk());
         tvMediaTitle.setTextColor(textMain);
         tvMediaArtist.setTextColor(textMuted);
         tvMediaTime.setTextColor(textMuted);
         tvVolLabel.setTextColor(textMuted);
         tvPairedSummary.setTextColor(textMuted);
 
-        int activePill = lightSurface ? Color.rgb(14, 16, 20) : Color.argb(62, 255, 255, 255);
-        int activeInk = Color.rgb(242, 241, 238);
+        int activePill = lightSurface ? Color.rgb(16, 18, 22) : Color.argb(58, 255, 255, 255);
+        int activeInk = lightSurface ? Color.WHITE : Color.rgb(246, 248, 251);
         String[] looks = {"Frosted", "Auto", "Dark", "Light"};
         for (int i = 0; i < 4; i++) {
             boolean sel = looks[i].equals(look);
             lookButtons[i].setBackground(pillDrawable(
-                    sel ? activePill : Color.argb(22, 255, 255, 255), Color.TRANSPARENT, 14));
+                    sel ? activePill : neutralFill(), Color.TRANSPARENT, 12));
             lookButtons[i].setTextColor(sel ? activeInk : textMuted);
         }
 
@@ -1794,7 +2049,7 @@ public final class MainActivity extends Activity {
             if (gradientButtons[i] == null) continue;
             boolean sel = grads[i].equals(activeGrad);
             gradientButtons[i].setBackground(pillDrawable(
-                    sel ? activeAccentColor : Color.argb(22, 255, 255, 255), Color.TRANSPARENT, 12));
+                    sel ? activeAccentColor : neutralFill(), Color.TRANSPARENT, 10));
             gradientButtons[i].setTextColor(sel ? Color.rgb(10, 12, 16) : textMuted);
         }
         if (audioWaveBg != null) {
@@ -1828,6 +2083,12 @@ public final class MainActivity extends Activity {
         if (swMediaNotif != null) swMediaNotif.setLightSurface(lightSurface);
         if (swAudioWave != null) swAudioWave.setLightSurface(lightSurface);
         if (swSyncMusicColor != null) swSyncMusicColor.setLightSurface(lightSurface);
+        if (swTrailToggle != null) swTrailToggle.setAccentColor(activeAccentColor);
+        if (swHapticsToggle != null) swHapticsToggle.setAccentColor(activeAccentColor);
+        if (swMediaNotif != null) swMediaNotif.setAccentColor(activeAccentColor);
+        if (swAudioWave != null) swAudioWave.setAccentColor(activeAccentColor);
+        if (swSyncMusicColor != null) swSyncMusicColor.setAccentColor(activeAccentColor);
+        applyChrome();
         padCanvas.setAccentColor(activeAccentColor);
         refreshPadPrefs();
         updateAudioWaveVisibility();
@@ -1849,9 +2110,9 @@ public final class MainActivity extends Activity {
         shelfListBox.removeAllViews();
         if (st.shelf.isEmpty()) {
             TextView empty = new TextView(this);
-            empty.setText("No files on PC Shelf yet");
-            empty.setTextSize(12f);
-            empty.setTextColor(Color.argb(145, 220, 225, 235));
+            empty.setText("No files on the PC shelf yet");
+            Type.caption(empty);
+            empty.setTextColor(mutedInk());
             shelfListBox.addView(empty);
         } else {
             for (PinnedDeckClient.ShelfItem sf : st.shelf) {
@@ -1862,56 +2123,38 @@ public final class MainActivity extends Activity {
         clipListBox.removeAllViews();
         if (st.clipboard.isEmpty()) {
             TextView empty = new TextView(this);
-            empty.setText("No PC Clipboard history yet");
-            empty.setTextSize(12f);
-            empty.setTextColor(Color.argb(145, 220, 225, 235));
+            empty.setText("No PC clipboard history yet");
+            Type.caption(empty);
+            empty.setTextColor(mutedInk());
             clipListBox.addView(empty);
         } else {
             for (final PinnedDeckClient.ClipItem ci : st.clipboard) {
-                TextView row = new TextView(this);
-                row.setText((ci.pinned ? "📌  " : "📋  ") + ci.text.replace('\n', ' '));
-                row.setTextSize(12.5f);
-                row.setSingleLine(true);
-                row.setTextColor(Color.WHITE);
-                row.setBackground(pillDrawable(Color.argb(32, 255, 255, 255), Color.argb(28, 255, 255, 255), 12));
-                row.setPadding(Math.round(dp(12)), Math.round(dp(9)), Math.round(dp(12)), Math.round(dp(9)));
+                View row = makeWidgetRow(ci.text.replace('\n', ' '),
+                        ci.pinned ? Icons.BOOKMARK : Icons.CLIPBOARD, false);
                 row.setOnClickListener(v -> {
                     try {
                         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("NotchPixel", ci.text));
+                        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("OpenPixel", ci.text));
                         Toast.makeText(this, "Copied to phone clipboard", Toast.LENGTH_SHORT).show();
                     } catch (Exception ignored) {}
                 });
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                lp.bottomMargin = Math.round(dp(6));
-                clipListBox.addView(row, lp);
+                clipListBox.addView(row);
             }
         }
         if (todoListBox != null) {
             todoListBox.removeAllViews();
             if (st.todos.isEmpty()) {
                 TextView empty = new TextView(this);
-                empty.setText("No PC To-Do items yet — tap + Add");
-                empty.setTextSize(12f);
-                empty.setTextColor(Color.argb(145, 220, 225, 235));
+                empty.setText("No PC to-do items yet — tap Add");
+                Type.caption(empty);
+                empty.setTextColor(mutedInk());
                 todoListBox.addView(empty);
             } else {
                 for (final PinnedDeckClient.TodoItem ti : st.todos) {
-                    TextView row = new TextView(this);
-                    row.setText((ti.done ? "☑  " : "☐  ") + ti.text);
-                    row.setTextSize(12.5f);
-                    row.setSingleLine(true);
-                    row.setTextColor(ti.done ? Color.argb(145, 200, 208, 220) : Color.WHITE);
-                    row.setBackground(pillDrawable(
-                            ti.done ? Color.argb(20, 48, 209, 88) : Color.argb(32, 255, 255, 255),
-                            Color.argb(28, 255, 255, 255), 12));
-                    row.setPadding(Math.round(dp(12)), Math.round(dp(9)), Math.round(dp(12)), Math.round(dp(9)));
+                    View row = makeWidgetRow(ti.text,
+                            ti.done ? Icons.CHECK_SQUARE : Icons.SQUARE, ti.done);
                     row.setOnClickListener(v -> sendAsync(() -> client.toggleTodo(ti.index)));
-                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                    lp.bottomMargin = Math.round(dp(6));
-                    todoListBox.addView(row, lp);
+                    todoListBox.addView(row);
                 }
             }
         }
@@ -1946,57 +2189,57 @@ public final class MainActivity extends Activity {
         if (st.recording) {
             setStatusDotStyle(Color.rgb(255, 69, 58), "REC " + fmtSec(st.recordingSec),
                     Color.argb(65, 255, 69, 58), Color.rgb(255, 130, 124));
-            tvTopStatus.setText(st.pcName);
+            setTextIfChanged(tvTopStatus, st.pcName);
         } else {
             setStatusDotStyle(Color.rgb(48, 209, 88), "LIVE",
                     Color.argb(52, 48, 209, 88), Color.rgb(90, 232, 130));
-            tvTopStatus.setText(st.pcName);
+            setTextIfChanged(tvTopStatus, st.pcName);
         }
 
         if (st.hasMedia) {
-            tvMediaApp.setText((st.mediaApp.isEmpty() ? "PC MEDIA" : st.mediaApp.toUpperCase(Locale.US)));
-            tvMediaTitle.setText(st.mediaTitle.isEmpty() ? "Playing" : st.mediaTitle);
-            tvMediaArtist.setText(st.mediaArtist.isEmpty() ? "Windows Media Session" : st.mediaArtist);
+            setTextIfChanged(tvMediaApp, st.mediaApp.isEmpty() ? "PC MEDIA" : st.mediaApp.toUpperCase(Locale.US));
+            setTextIfChanged(tvMediaTitle, st.mediaTitle.isEmpty() ? "Playing" : st.mediaTitle);
+            setTextIfChanged(tvMediaArtist, st.mediaArtist.isEmpty() ? "Windows media session" : st.mediaArtist);
             if (!isSeekingMedia) {
                 int pct = st.durSec > 0 ? Math.min(100, Math.round(st.posSec * 100f / st.durSec)) : 0;
                 sbSeek.setProgress(pct);
-                tvMediaTime.setText(fmtSec(st.posSec) + " / " + fmtSec(st.durSec));
+                setTextIfChanged(tvMediaTime, fmtSec(st.posSec) + " / " + fmtSec(st.durSec));
             }
-            btnPlayPause.setText(st.isPlaying ? "❚❚" : "▶");
+            btnPlayPause.setIcon(st.isPlaying ? Icons.PAUSE : Icons.PLAY);
             if (ivNowArt != null && !st.albumArtB64.equals(lastArtB64)) {
                 lastArtB64 = st.albumArtB64;
                 Bitmap artBmp = decodeBase64Bitmap(st.albumArtB64);
                 if (artBmp != null) {
                     ivNowArt.setImageBitmap(artBmp);
                     ivNowArt.setVisibility(View.VISIBLE);
-                    tvNowArtGlyph.setVisibility(View.GONE);
+                    ivNowIcon.setVisibility(View.GONE);
                 } else {
                     ivNowArt.setVisibility(View.GONE);
-                    tvNowArtGlyph.setVisibility(View.VISIBLE);
+                    ivNowIcon.setVisibility(View.VISIBLE);
                 }
             }
         } else {
-            tvMediaApp.setText("NOW PLAYING ON PC");
-            tvMediaTitle.setText("Nothing playing");
-            tvMediaArtist.setText("Play music or video on your PC");
+            setTextIfChanged(tvMediaApp, "Now playing on PC");
+            setTextIfChanged(tvMediaTitle, "Nothing playing");
+            setTextIfChanged(tvMediaArtist, "Play music or video on your PC");
             if (!isSeekingMedia) {
                 sbSeek.setProgress(0);
-                tvMediaTime.setText("0:00 / 0:00");
+                setTextIfChanged(tvMediaTime, "0:00 / 0:00");
             }
-            btnPlayPause.setText("▶");
+            btnPlayPause.setIcon(Icons.PLAY);
             if (ivNowArt != null && !lastArtB64.isEmpty()) {
                 lastArtB64 = "";
                 ivNowArt.setVisibility(View.GONE);
-                tvNowArtGlyph.setVisibility(View.VISIBLE);
+                ivNowIcon.setVisibility(View.VISIBLE);
             }
         }
         updateAudioWaveVisibility();
 
         if (!isDraggingVolume) {
-            tvVolLabel.setText(st.muted ? "0" : String.valueOf(st.volume));
+            setTextIfChanged(tvVolLabel, st.muted ? "0" : String.valueOf(st.volume));
             sbVolume.setProgress(st.volume);
         }
-        btnMuteVol.setText(st.muted ? "🔇" : "🔊");
+        btnMuteVol.setIcon(st.muted ? Icons.VOLUME_OFF : Icons.VOLUME);
         btnMuteMic.setText(st.micMuted ? "Mic: Muted" : "Mic: Active");
 
         cardCpu.updateMetric(st.cpu, st.cpuTempAvailable, st.cpuTempC);
@@ -2007,17 +2250,19 @@ public final class MainActivity extends Activity {
         if (nowCardRam != null) nowCardRam.updateMetric(st.ram, false, 0);
 
         if (tvRecTimer != null && activeTab == 3 && activeModeSub == 0) {
-            tvRecTimer.setText(st.recording ? ("Recording  " + fmtSec(st.recordingSec)) : "Game Deck Ready");
+            setTextIfChanged(tvRecTimer, st.recording ? ("Recording  " + fmtSec(st.recordingSec)) : "Ready");
             tvRecTimer.setTextColor(st.recording ? Color.rgb(242, 72, 72) : activeAccentColor);
         }
         if (btnGameRecord != null && activeTab == 3 && activeModeSub == 0) {
-            btnGameRecord.setBackground(pillDrawable(
-                    st.recording ? Color.rgb(210, 48, 48) : Color.rgb(34, 40, 50),
-                    Color.argb(50, 255, 255, 255), 16));
+            btnGameRecord.setContent(Icons.RECORD, st.recording ? "Stop" : "Record");
+            btnGameRecord.setTokens(
+                    st.recording ? Color.argb(232, 212, 52, 52) : neutralFill(),
+                    st.recording ? Color.argb(90, 255, 255, 255) : Color.argb(30, 255, 255, 255),
+                    st.recording ? Color.WHITE : surfaceInk());
         }
         if (tvPresentTimer != null && activeTab == 3 && activeModeSub == 1 && presentingActive) {
             int el = (int) ((System.currentTimeMillis() - presentStartMs) / 1000L);
-            tvPresentTimer.setText("Presentation Timer: " + fmtSec(el));
+            setTextIfChanged(tvPresentTimer, "Elapsed  " + fmtSec(el));
         }
 
         // Only rebuild Stream Deck Apps grid when slots, icons, or mute state actually changed
@@ -2057,7 +2302,7 @@ public final class MainActivity extends Activity {
                 store.isPaired() ? "OFFLINE" : "PAIR",
                 Color.argb(56, 240, 165, 65), Color.rgb(255, 200, 110));
         tvTopStatus.setText(store.isPaired() ? store.getPcName() : "Pair PC");
-        tvBannerNotice.setText(reason == null ? "Waiting for Private Wi-Fi connection..." : reason);
+        setTextIfChanged(tvBannerNotice, reason == null ? "Waiting for Private Wi-Fi connection..." : reason);
         tvBannerNotice.setTextColor(Color.rgb(240, 185, 85));
         tvBannerNotice.setVisibility(View.VISIBLE);
         refreshPairingSummary();
@@ -2094,6 +2339,17 @@ public final class MainActivity extends Activity {
     private static String fmtSec(int sec) {
         int s = Math.max(0, sec);
         return String.format(Locale.US, "%d:%02d", s / 60, s % 60);
+    }
+
+    /**
+     * Assigning identical text still triggers a measure/layout pass, and these
+     * fields are refreshed once a second, so only write when the value changed.
+     */
+    private static void setTextIfChanged(TextView tv, String value) {
+        if (tv == null || value == null) return;
+        CharSequence current = tv.getText();
+        if (current != null && current.toString().equals(value)) return;
+        tv.setText(value);
     }
 
     @Override

@@ -61,7 +61,7 @@ public final class QrPairingActivity extends Activity {
     private EditText etQrUri, etIp, etPort, etCode, etCertFp;
     private TextView tvStatus;
     private LinearLayout manualBox;
-    private Button btnToggleManual;
+    private IconButtonView btnToggleManual;
 
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
@@ -111,24 +111,33 @@ public final class QrPairingActivity extends Activity {
         hLp.bottomMargin = Math.round(14 * dp);
         headerRow.setLayoutParams(hLp);
 
-        Button btnBack = makePillButton("← Back", Color.argb(36, 255, 255, 255), Color.WHITE, 14);
-        btnBack.setOnClickListener(v -> finish());
+        IconButtonView btnBack = new IconButtonView(this);
+        btnBack.setContent(Icons.ARROW_LEFT, "Back");
+        btnBack.setMode(IconButtonView.ICON_LABEL_HORIZONTAL);
+        btnBack.setIconSizeDp(16f);
+        btnBack.setLabelSizeSp(12.5f);
+        btnBack.setGapDp(7f);
+        btnBack.setPaddingDp(12f);
+        btnBack.setMinHeightDp(40f);
+        btnBack.setRadiusDp(14f);
+        btnBack.setTokens(Color.argb(24, 255, 255, 255), Color.argb(32, 255, 255, 255), Color.WHITE);
+        btnBack.setOnActionListener(this::finish);
         headerRow.addView(btnBack);
 
         TextView title = new TextView(this);
         title.setText("Pair with Windows PC");
+        Type.title(title);
         title.setTextColor(Color.WHITE);
-        title.setTextSize(19f);
-        title.getPaint().setFakeBoldText(true);
         title.setPadding(Math.round(12 * dp), 0, 0, 0);
         headerRow.addView(title);
         root.addView(headerRow);
 
         TextView sub = new TextView(this);
-        sub.setText("Open NotchPixel Settings → PC Deck on Windows, then scan the QR code below.");
-        sub.setTextColor(Color.argb(185, 225, 232, 240));
-        sub.setTextSize(13f);
-        sub.setPadding(Math.round(2 * dp), 0, Math.round(2 * dp), Math.round(14 * dp));
+        sub.setText("Open OpenPixel on Windows, go to Settings and then PC Deck, then scan the QR code below.");
+        Type.body(sub);
+        sub.setTextColor(Color.argb(178, 225, 232, 240));
+        sub.setLineSpacing(3 * dp, 1f);
+        sub.setPadding(Math.round(2 * dp), 0, Math.round(2 * dp), Math.round(16 * dp));
         root.addView(sub);
 
         // Tall, true-aspect-ratio rounded Camera2 viewfinder card (NEVER squished)
@@ -169,7 +178,7 @@ public final class QrPairingActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
         TextView camHint = new TextView(this);
-        camHint.setText("Align NotchPixel QR inside frame");
+        camHint.setText("Align OpenPixel QR inside frame");
         camHint.setGravity(Gravity.CENTER);
         camHint.setTextSize(12f);
         camHint.setTextColor(Color.WHITE);
@@ -187,9 +196,9 @@ public final class QrPairingActivity extends Activity {
 
         // Status banner
         tvStatus = new TextView(this);
-        tvStatus.setText("Camera ready — scanning automatically");
+        tvStatus.setText("Camera ready, scanning automatically");
+        Type.caption(tvStatus);
         tvStatus.setTextColor(Color.rgb(43, 228, 234));
-        tvStatus.setTextSize(13f);
         tvStatus.setGravity(Gravity.CENTER);
         tvStatus.setPadding(Math.round(8 * dp), Math.round(4 * dp), Math.round(8 * dp), Math.round(12 * dp));
         root.addView(tvStatus);
@@ -202,14 +211,28 @@ public final class QrPairingActivity extends Activity {
         qLp.bottomMargin = Math.round(12 * dp);
         quickRow.setLayoutParams(qLp);
 
-        Button btnDiscover = makePillButton("Auto-Find PC", Color.rgb(43, 228, 234), Color.rgb(8, 12, 16), 16);
-        btnDiscover.setOnClickListener(v -> discoverPc());
+        IconButtonView btnDiscover = new IconButtonView(this);
+        btnDiscover.setContent(Icons.MONITOR, "Find PC");
+        btnDiscover.setMode(IconButtonView.ICON_LABEL_HORIZONTAL);
+        btnDiscover.setIconSizeDp(16f);
+        btnDiscover.setLabelSizeSp(12.5f);
+        btnDiscover.setMinHeightDp(44f);
+        btnDiscover.setRadiusDp(14f);
+        btnDiscover.setTokens(Color.rgb(43, 228, 234), Color.argb(70, 255, 255, 255), Color.rgb(8, 12, 16));
+        btnDiscover.setOnActionListener(this::discoverPc);
         LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         dLp.rightMargin = Math.round(8 * dp);
         quickRow.addView(btnDiscover, dLp);
 
-        Button btnPaste = makePillButton("Paste QR Link", Color.argb(38, 255, 255, 255), Color.WHITE, 16);
-        btnPaste.setOnClickListener(v -> pasteAndParseQr());
+        IconButtonView btnPaste = new IconButtonView(this);
+        btnPaste.setContent(Icons.PASTE, "Paste link");
+        btnPaste.setMode(IconButtonView.ICON_LABEL_HORIZONTAL);
+        btnPaste.setIconSizeDp(16f);
+        btnPaste.setLabelSizeSp(12.5f);
+        btnPaste.setMinHeightDp(44f);
+        btnPaste.setRadiusDp(14f);
+        btnPaste.setTokens(Color.argb(24, 255, 255, 255), Color.argb(32, 255, 255, 255), Color.WHITE);
+        btnPaste.setOnActionListener(this::pasteAndParseQr);
         quickRow.addView(btnPaste, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         root.addView(quickRow);
 
@@ -219,11 +242,21 @@ public final class QrPairingActivity extends Activity {
         manualCard.setGlassStyle(true, false, Color.rgb(43, 228, 234));
         manualCard.setPadding(Math.round(14 * dp), Math.round(12 * dp), Math.round(14 * dp), Math.round(12 * dp));
 
-        btnToggleManual = makePillButton("Enter IP & 6-Digit Code Manually ▾", Color.TRANSPARENT, Color.argb(220, 235, 240, 248), 12);
-        btnToggleManual.setOnClickListener(v -> {
+        btnToggleManual = new IconButtonView(this);
+        btnToggleManual.setContent(Icons.CHEVRON_DOWN, "Enter IP and code manually");
+        btnToggleManual.setMode(IconButtonView.ICON_LABEL_HORIZONTAL);
+        btnToggleManual.setIconSizeDp(15f);
+        btnToggleManual.setLabelSizeSp(12f);
+        btnToggleManual.setGapDp(8f);
+        btnToggleManual.setPaddingDp(4f);
+        btnToggleManual.setMinHeightDp(34f);
+        btnToggleManual.setRadiusDp(10f);
+        btnToggleManual.setTokens(Color.TRANSPARENT, Color.TRANSPARENT, Color.argb(215, 235, 240, 248));
+        btnToggleManual.setOnActionListener(() -> {
             boolean show = manualBox.getVisibility() != View.VISIBLE;
             manualBox.setVisibility(show ? View.VISIBLE : View.GONE);
-            btnToggleManual.setText(show ? "Hide Manual Setup ▴" : "Enter IP & 6-Digit Code Manually ▾");
+            btnToggleManual.setContent(show ? Icons.CHEVRON_UP : Icons.CHEVRON_DOWN,
+                    show ? "Hide manual setup" : "Enter IP and code manually");
         });
         manualCard.addView(btnToggleManual);
 
@@ -232,7 +265,7 @@ public final class QrPairingActivity extends Activity {
         manualBox.setVisibility(View.GONE);
         manualBox.setPadding(0, Math.round(10 * dp), 0, 0);
 
-        etQrUri = makeField("notchpixel-deck://pair?...");
+        etQrUri = makeField("openpixel-deck://pair?...");
         etIp = makeField("PC Private Wi-Fi IP (e.g. 192.168.1.42)");
         etPort = makeField("TLS Port (default 47825)");
         etPort.setText("47825");
@@ -247,11 +280,18 @@ public final class QrPairingActivity extends Activity {
         manualBox.addView(etCode);
         manualBox.addView(etCertFp);
 
-        Button btnPair = makePillButton("Pair & Verify Certificate", Color.rgb(43, 228, 234), Color.rgb(8, 12, 16), 16);
+        IconButtonView btnPair = new IconButtonView(this);
+        btnPair.setContent(Icons.LOCK, "Pair and verify certificate");
+        btnPair.setMode(IconButtonView.ICON_LABEL_HORIZONTAL);
+        btnPair.setIconSizeDp(16f);
+        btnPair.setLabelSizeSp(12.5f);
+        btnPair.setMinHeightDp(46f);
+        btnPair.setRadiusDp(14f);
+        btnPair.setTokens(Color.rgb(43, 228, 234), Color.argb(70, 255, 255, 255), Color.rgb(8, 12, 16));
+        btnPair.setOnActionListener(this::submitPair);
         LinearLayout.LayoutParams pLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        pLp.topMargin = Math.round(6 * dp);
-        btnPair.setOnClickListener(v -> submitPair());
+        pLp.topMargin = Math.round(8 * dp);
         manualBox.addView(btnPair, pLp);
 
         manualCard.addView(manualBox);
@@ -373,9 +413,9 @@ public final class QrPairingActivity extends Activity {
         float dp = getResources().getDisplayMetrics().density;
         EditText et = new EditText(this);
         et.setHint(hint);
-        et.setHintTextColor(Color.argb(130, 210, 220, 235));
+        et.setHintTextColor(Color.argb(120, 205, 215, 230));
         et.setTextColor(Color.WHITE);
-        et.setTextSize(14f);
+        Type.body(et);
         et.setSingleLine(true);
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(Color.argb(38, 255, 255, 255));
@@ -396,8 +436,7 @@ public final class QrPairingActivity extends Activity {
         b.setText(text);
         b.setAllCaps(false);
         b.setTextColor(fgColor);
-        b.setTextSize(13.5f);
-        b.getPaint().setFakeBoldText(true);
+        Type.style(b, 12.5f, Type.MEDIUM, 0.008f);
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(bgColor);
         bg.setCornerRadius(radDp * dp);
@@ -433,7 +472,7 @@ public final class QrPairingActivity extends Activity {
             tvStatus.setText("Loaded QR payload — pairing...");
             if (p.isValidForPairing()) submitPair();
         } else {
-            tvStatus.setText("No NotchPixel QR link found in clipboard.");
+            tvStatus.setText("No OpenPixel QR link found in clipboard.");
         }
     }
 
@@ -447,7 +486,7 @@ public final class QrPairingActivity extends Activity {
                     etPort.setText(String.valueOf(pr.tlsPort));
                     if (!pr.certFingerprint.isEmpty()) etCertFp.setText(pr.certFingerprint);
                     manualBox.setVisibility(View.VISIBLE);
-                    btnToggleManual.setText("Hide Manual Setup ▴");
+                    btnToggleManual.setContent(Icons.CHEVRON_UP, "Hide manual setup");
                     tvStatus.setText("Found " + pr.pcName + " (" + pr.ip + "). Enter the 6-digit code shown on PC.");
                 } else {
                     tvStatus.setText("PC not found. Make sure PC Deck is ON and both devices share Private Wi-Fi.");
@@ -584,7 +623,7 @@ public final class QrPairingActivity extends Activity {
             previewSize = chooseOptimalPreviewSize(chars);
             runOnUiThread(() -> configurePreviewTransform(viewfinder.getWidth(), viewfinder.getHeight()));
 
-            scanThread = new HandlerThread("NotchPixelQrScan");
+            scanThread = new HandlerThread("OpenPixelQrScan");
             scanThread.start();
             scanHandler = new Handler(scanThread.getLooper());
 

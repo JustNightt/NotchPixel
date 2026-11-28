@@ -116,24 +116,38 @@ namespace OpenPixel
                 if (!_state.PointerInsideIsland && _state.IslandOpen) CollapseIslandNow();
             };
 
-            _telemetryTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            _telemetryTimer = new System.Windows.Forms.Timer { Interval = 200 };
             _telemetryTimer.Tick += (_, _) =>
             {
                 long profStart = Stopwatch.GetTimestamp();
+                bool prevFs = _state.IsFullscreenGameActive;
+                bool prevMax = _state.IsForegroundMaximized;
                 WindowsSystemHooks.Tick10HzTelemetryAndSensors(_state);
                 TelemetryMs += Stopwatch.GetElapsedTime(profStart).TotalMilliseconds;
                 ++TelemetryTicks;
-                if (_state.IsFullscreenGameActive || _state.ToastActive || _state.IsRecordingScreen ||
+                bool windowStateChanged = prevFs != _state.IsFullscreenGameActive ||
+                                          prevMax != _state.IsForegroundMaximized;
+                if (windowStateChanged)
+                {
+                    StartAnimTimer();
+                    RenderIslandNow();
+                }
+                else if (_state.IsFullscreenGameActive || _state.ToastActive || _state.IsRecordingScreen ||
                     _state.ObsRecordingActive || (_state.Media.HasSession && _state.Media.IsPlaying) ||
-                    _state.Sensors.MicActive ||
-                    _state.Settings.Theme == SurfaceTheme.LiquidGlass || _state.Settings.Theme == SurfaceTheme.CandyGlass)
+                    _state.Sensors.MicActive)
                 {
                     RenderIslandNow();
                 }
-                // Keep Liquid Glass responsive even when resting; 10 Hz when open/hovered.
-                int want = (_state.IslandOpen || _state.PointerInsideIsland) ? 33
-                         : (_state.Settings.Theme == SurfaceTheme.LiquidGlass || _state.Settings.Theme == SurfaceTheme.CandyGlass) ? 66 : 250;
+                // Polling here is for sensors, not repaints: the island is redrawn by
+                // the frame loop (or the 1 Hz tick when it is resting), never by the
+                // telemetry probe. Repainting the same still pill every 66 ms was a
+                // full core's worth of layered-window uploads for no visible change.
+                int want = (_state.IslandOpen || _state.PointerInsideIsland) ? 33 : 200;
                 if (_telemetryTimer.Interval != want) _telemetryTimer.Interval = want;
+                // Wake the frame loop within one telemetry tick when something starts
+                // moving (a track, the mic, a recording, a notice) after being idle.
+                if (!_animTimer.Enabled && (AmbienceShouldAnimate() || IdleFramesShouldRun()))
+                    StartAnimTimer();
             };
             _telemetryTimer.Start();
 
@@ -168,18 +182,19 @@ namespace OpenPixel
 
                 bool liveUi = _state.IslandOpen || _state.ToastActive || _state.IsFullscreenGameActive ||
                               (_state.Media.HasSession && _state.Media.IsPlaying) || _state.Sensors.MicActive;
-                if (liveUi || DateTime.Now.Second == 0)
+                bool glassTheme = _state.Settings.Theme == SurfaceTheme.LiquidGlass ||
+                                  _state.Settings.Theme == SurfaceTheme.CandyGlass;
+                // A resting glass pill still samples what is behind it, once a second —
+                // enough for a still pill, and 25x cheaper than the old idle loop.
+                if (liveUi || glassTheme || DateTime.Now.Second == 0)
                 {
-                    long renderStart = Stopwatch.GetTimestamp();
                     RenderIslandNow();
-                    RenderMs += Stopwatch.GetElapsedTime(renderStart).TotalMilliseconds;
-                    ++RenderCount;
                 }
             };
             _oneHzTimer.Start();
 
             var trayMenu = new ContextMenuStrip();
-            trayMenu.Items.Add("NotchPixel 0.5.126 Settings", null, (_, _) => _settingsWindow.ToggleVisibility());
+            trayMenu.Items.Add("OpenPixel 0.5.126 Settings", null, (_, _) => _settingsWindow.ToggleVisibility());
             trayMenu.Items.Add("Welcome setup", null, (_, _) => _onboardingWindow.ShowFromStart());
             trayMenu.Items.Add("Pin Desktop Day Clock", null, (_, _) => AuxiliaryWindows.ToggleDesktopWidget(_state, WidgetType.DayClock));
             trayMenu.Items.Add("Toggle Live Video Wallpaper", null, (_, _) =>
@@ -188,12 +203,12 @@ namespace OpenPixel
                 AuxiliaryWindows.UpdateLiveVideoWallpaper(_state);
             });
             trayMenu.Items.Add(new ToolStripSeparator());
-            trayMenu.Items.Add("Quit NotchPixel", null, (_, _) => Close());
+            trayMenu.Items.Add("Quit OpenPixel", null, (_, _) => Close());
 
             _trayIcon = new NotifyIcon
             {
-                Icon = SystemIcons.Application,
-                Text = "NotchPixel 0.5.126 (Liquid Glass)",
+                Icon = BrandLogo.TrayIcon() ?? SystemIcons.Application,
+                Text = "OpenPixel 0.5.126 (Liquid Glass)",
                 ContextMenuStrip = trayMenu,
                 Visible = true
             };
@@ -352,14 +367,6 @@ namespace OpenPixel
 
         private void StepSpringsAndRender()
         {
-            int motionInterval = _state.Settings.MotionSpeed switch
-            {
-                MotionSpeed.Quick => 8,
-                MotionSpeed.Normal => 8,
-                _ => 16
-            };
-            if (_animTimer.Interval != motionInterval) _animTimer.Interval = motionInterval;
-
             long nowTs = Stopwatch.GetTimestamp();
             float dt = _lastAnimTimestamp > 0
                 ? Math.Clamp((float)Stopwatch.GetElapsedTime(_lastAnimTimestamp, nowTs).TotalSeconds, 0.001f, 0.05f)
@@ -497,16 +504,23 @@ namespace OpenPixel
 
             RenderIslandNow();
 
-            // Keep the 60 fps loop alive while a theme cross-fades or an animated
-            // theme ambience is on screen; stop when everything is truly idle so
-            // a settled island still costs 0.0% CPU.
-            if (!moving && !_state.IslandOpen && !_state.IsThemeBlending && !AmbienceShouldAnimate())
+            // Keep the loop alive while a theme cross-fades, an ambience is on screen,
+            // or the resting island is breathing; only a hidden island or a
+            // reduced-motion/battery-saver setup stops it completely.
+            if (!moving && !_state.IslandOpen && !_state.IsThemeBlending &&
+                !AmbienceShouldAnimate() && !IdleFramesShouldRun())
             {
                 StopAnimTimer();
             }
-            else if (!_animTimer.Enabled)
+            else
             {
-                StartAnimTimer();
+                if (!_animTimer.Enabled) StartAnimTimer();
+                // 120fps (8ms) while springs are moving, 60fps while open/live,
+                // and 25fps (40ms) for resting idle breathing.
+                int wantedInterval = (moving || _state.IsThemeBlending)
+                    ? 8
+                    : ((_state.IslandOpen || _state.ToastActive || _state.IsFullscreenGameActive) ? 16 : 40);
+                if (_animTimer.Interval != wantedInterval) _animTimer.Interval = wantedInterval;
             }
         }
 
@@ -515,6 +529,7 @@ namespace OpenPixel
             if (_animTimer.Enabled) return;
             _lastAnimTimestamp = Stopwatch.GetTimestamp();
             Win32Layered.BeginHighResolutionTimer();
+            _animTimer.Interval = 8;
             _animTimer.Start();
         }
 
@@ -523,6 +538,23 @@ namespace OpenPixel
             if (!_animTimer.Enabled) return;
             _animTimer.Stop();
             Win32Layered.EndHighResolutionTimer();
+        }
+
+        // Continuous frames only exist for something that is actually moving. A
+        // closed, untouched island is a still picture: its pill, icons and text do
+        // not change between seconds, and repainting them (plus re-sampling the
+        // desktop behind the glass) at 25 fps pinned a full core on an idle PC.
+        private bool IdleFramesShouldRun()
+        {
+            var s = _state.Settings;
+            if (s.ReduceMotion || _state.IslandHidden || !Visible) return false;
+            if (s.PauseEffectsOnBattery && SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Online) return false;
+            if (_state.IslandOpen || _state.PointerInsideIsland || _state.ToastActive) return true;
+            if (_state.IsFullscreenGameActive || _state.Sensors.MicActive || _state.FocusTimerRunning) return true;
+            if (_state.IsRecordingScreen || _state.ObsRecordingActive) return true;
+            if (_state.Media.HasSession && _state.Media.IsPlaying) return true;
+            if (_state.Media.LyricsFetching || _state.WebDrawerVisible) return true;
+            return _state.IsThemeBlending;
         }
 
         // Soft themes (Rosé, Lavender, Peach, Sakura) animate particles even when
@@ -566,6 +598,7 @@ namespace OpenPixel
             }
 
             _renderingIsland = true;
+            long renderStart = Stopwatch.GetTimestamp();
             try
             {
                 PositionOnTargetMonitor();
@@ -585,6 +618,10 @@ namespace OpenPixel
             }
             finally
             {
+                // Every island frame is counted here (not just the 1 Hz ones), so the
+                // --idle-test profile can show exactly what the island itself costs.
+                RenderMs += Stopwatch.GetElapsedTime(renderStart).TotalMilliseconds;
+                ++RenderCount;
                 _renderingIsland = false;
                 if (_state.IsThemeBlending && !_animTimer.Enabled) StartAnimTimer();
                 if (_islandRepaintQueued)
@@ -1006,7 +1043,9 @@ namespace OpenPixel
                               $"oneHzTicks={IslandMainForm.OneHzTicks} oneHzMs={IslandMainForm.OneHzMs:F0} " +
                               $"[rem={IslandMainForm.RemindersMs:F0} media={IslandMainForm.MediaMs:F0} " +
                               $"agents={IslandMainForm.AgentsMs:F0} widgets={IslandMainForm.WidgetsMs:F0}] " +
-                              $"renders={IslandMainForm.RenderCount} renderMs={IslandMainForm.RenderMs:F0}");
+                              $"renders={IslandMainForm.RenderCount} renderMs={IslandMainForm.RenderMs:F0} " +
+                              $"open={state.IslandOpen} hover={state.PointerInsideIsland} playing={state.Media.IsPlaying} mic={state.Sensors.MicActive} " +
+                              $"lensMs={SkiaLiquidGlass.LensComputeMs:F0} lensN={SkiaLiquidGlass.LensComputeCount}");
             return oneCorePct < 5.0 ? 0 : 1;
         }
 
@@ -1138,13 +1177,13 @@ namespace OpenPixel
                 Preview = "3 files",
                 SourceInfo = "Temp",
                 TimestampMs = hudNow - 40000,
-                FilePaths = new List<string> { "notchpixel-demo.zip", "brand-kit.fig", "island.js" }
+                FilePaths = new List<string> { "openpixel-demo.zip", "brand-kit.fig", "island.js" }
             });
             state.ClipboardHistory.Add(new ClipboardEntry
             {
                 Category = ClipboardCategory.Files,
                 Preview = "Invoice",
-                SourceInfo = "NotchPixel demo",
+                SourceInfo = "OpenPixel demo",
                 TimestampMs = hudNow - 12000,
                 FilePaths = new List<string> { "October.pdf" }
             });

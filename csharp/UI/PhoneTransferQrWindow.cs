@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 using OpenPixel.Core;
 using OpenPixel.Rendering;
+using OpenPixel.Services;
 
 namespace OpenPixel.UI
 {
@@ -16,14 +17,16 @@ namespace OpenPixel.UI
     {
         private static PhoneTransferQrWindow _active;
 
-        private const float BaseW = 320.0f;
-        private const float BaseH = 446.0f;
+        private const float BaseW = 330.0f;
+        private const float BaseH = 498.0f;
 
         private readonly GlobalAppState _state;
         private readonly LiquidGlassRenderer _renderer = new();
         private float _uiScale = 1.0f;
         private float _mouseX = -1000.0f;
         private float _mouseY = -1000.0f;
+        private string _lastHoverId = "";
+        private bool _showAppInstallQr = false; // Default: no-app direct file transfer QR
 
         public static void ShowFor(GlobalAppState state, Rectangle? islandScreenRect = null)
         {
@@ -158,7 +161,12 @@ namespace OpenPixel.UI
                     gp.CloseFigure();
                     Region prevC = _renderer.G.Clip;
                     _renderer.G.SetClip(gp, CombineMode.Replace);
-                    drewGlass = _renderer.RenderLiquidGlassBackdrop(Bounds, 0, 0, lw, lh, _state.Settings.GlassBlurRadius, _state.Settings.Theme);
+                    // The glass shape has to use this card's own 18 DIP radius and no
+                    // corner-concentrated specular: with the old auto radius every
+                    // corner sat outside the lens shape and rendered as a dark smudge.
+                    drewGlass = _renderer.RenderLiquidGlassBackdrop(Bounds, 0, 0, lw, lh,
+                        _state.Settings.GlassBlurRadius, _state.Settings.Theme,
+                        cornerRadiusPx: 18.0f * _uiScale, cornerSheen: 0.0f);
                     if (drewGlass)
                         _renderer.FillRoundedRect(card, 18.0f, Color.FromArgb(132, 12, 12, 16));
                     _renderer.G.Clip = prevC;
@@ -180,46 +188,74 @@ namespace OpenPixel.UI
                 }
                 _renderer.AddHitRegion("qr-close", closeCircle, ClosePopover);
 
-                // White-backed QR card framed by 4 white corner brackets
-                float qrCardSize = 186.0f;
+                // Mode toggle: [ Files (No App) ] | [ Android App ]
+                var modeTrack = new RectangleF(20, 48, lw - 40, 28);
+                _renderer.FillRoundedRect(modeTrack, 14.0f, light ? Color.FromArgb(20, 12, 12, 14) : Color.FromArgb(24, 255, 255, 255));
+                float halfW = (modeTrack.Width - 4.0f) * 0.5f;
+                var filesTab = new RectangleF(modeTrack.X + 2.0f, modeTrack.Y + 2.0f, halfW, 24.0f);
+                var appTab = new RectangleF(filesTab.Right, modeTrack.Y + 2.0f, halfW, 24.0f);
+                Color activePill = light ? Color.FromArgb(255, 20, 20, 24) : Color.FromArgb(255, 242, 242, 246);
+                Color activeInk = light ? Color.White : Color.FromArgb(255, 16, 16, 18);
+                _renderer.FillRoundedRect(_showAppInstallQr ? appTab : filesTab, 12.0f, activePill);
+                _renderer.DrawTextStr("Files (No App)", filesTab, 9.2f, !_showAppInstallQr, !_showAppInstallQr ? activeInk : textMuted, hAlign: StringAlignment.Center);
+                _renderer.DrawTextStr("Android App", appTab, 9.2f, _showAppInstallQr, _showAppInstallQr ? activeInk : textMuted, hAlign: StringAlignment.Center);
+                _renderer.AddHitRegion("qr-mode-files", filesTab, () => { _showAppInstallQr = false; RenderNow(); });
+                _renderer.AddHitRegion("qr-mode-app", appTab, () => { _showAppInstallQr = true; RenderNow(); });
+
+                // White-backed QR card framed by 4 crisp corner brackets
+                float qrCardSize = 180.0f;
                 float qrCardX = (lw - qrCardSize) * 0.5f;
-                float qrCardY = 58.0f;
+                float qrCardY = 90.0f;
                 var qrCard = new RectangleF(qrCardX, qrCardY, qrCardSize, qrCardSize);
                 _renderer.FillRoundedRect(qrCard, 16.0f, Color.White);
 
-                string url = string.IsNullOrWhiteSpace(_state.SendToPhoneUrl)
-                    ? $"http://{_state.LocalPrivateIp}:{_state.Settings.PcDeckPort}/shelf"
-                    : _state.SendToPhoneUrl;
-                _renderer.DrawQrCode(url, qrCard.X + 16, qrCard.Y + 16, qrCardSize - 32, Color.Black, Color.White);
+                string shelfUrl = LocalNetworkServers.BuildShelfShareUrl(_state);
+                string qrPayload = _showAppInstallQr ? LocalNetworkServers.AndroidAppDownloadUrl : shelfUrl;
+                _renderer.DrawQrCode(qrPayload,
+                    qrCard.X + 14, qrCard.Y + 14, qrCardSize - 28, Color.Black, Color.White);
 
                 // 4 crisp corner brackets framing the QR card
                 DrawCornerBrackets(new RectangleF(qrCard.X - 6, qrCard.Y - 6, qrCard.Width + 12, qrCard.Height + 12), 16.0f,
                     light ? Color.FromArgb(255, 24, 24, 28) : Color.White);
 
                 // Bold headline + helper copy
-                float ty = qrCard.Bottom + 20.0f;
-                _renderer.DrawTextStr("Scan the code with your phone's camera.", new RectangleF(20, ty, lw - 40, 38), 11.8f, true, textPrimary, noWrap: false);
-                ty += 42.0f;
-
-                string shelfLine = _state.ShelfFiles.Count == 0
-                    ? "The shelf is empty. Drop files on the island and your phone can download them from here."
-                    : $"{_state.ShelfFiles.Count} file{(_state.ShelfFiles.Count == 1 ? "" : "s")} ready on the shelf for your phone to download.";
-                _renderer.DrawTextStr(shelfLine, new RectangleF(20, ty, lw - 40, 34), 9.4f, false, textMuted, noWrap: false);
+                float ty = qrCard.Bottom + 16.0f;
+                string headline = _showAppInstallQr
+                    ? "Scan with your phone's camera to install the OpenPixel app."
+                    : "Scan with your phone's camera to download PC files (no app needed).";
+                _renderer.DrawTextStr(headline, new RectangleF(20, ty, lw - 40, 36), 11.2f, true, textPrimary, noWrap: false);
                 ty += 38.0f;
 
-                _renderer.DrawTextStr("Your phone can still send photos, files and text to this PC.", new RectangleF(20, ty, lw - 40, 28), 9.4f, false, textMuted, noWrap: false);
+                if (!_showAppInstallQr)
+                {
+                    _renderer.DrawTextStr(shelfUrl, new RectangleF(20, ty, lw - 40, 16), 8.6f, false, textMuted, mono: true);
+                    ty += 20.0f;
+                }
+
+                string shelfLine = _state.ShelfFiles.Count == 0
+                    ? "No files selected yet. Pick files below or drop them on the island."
+                    : $"{_state.ShelfFiles.Count} file{(_state.ShelfFiles.Count == 1 ? "" : "s")} ready on this PC for your phone to download.";
+                _renderer.DrawTextStr(shelfLine, new RectangleF(20, ty, lw - 40, 30), 9.2f, false, textMuted, noWrap: false);
                 ty += 32.0f;
 
                 string clipToggle = _state.SendToPhoneIncludeClipboard
-                    ? "Your copied text is on the phone page too. Turn off"
+                    ? "Copied text is shared on the phone page too. Turn off"
                     : "Copied text sharing is off. Turn on";
-                var clipToggleRect = new RectangleF(20, ty, lw - 40, 28);
-                _renderer.DrawTextStr(clipToggle, clipToggleRect, 9.4f, true, textPrimary, noWrap: false);
+                var clipToggleRect = new RectangleF(20, ty, lw - 40, 26);
+                _renderer.DrawTextStr(clipToggle, clipToggleRect, 9.0f, true, textPrimary, noWrap: false);
                 _renderer.AddHitRegion("qr-clip-toggle", clipToggleRect, () =>
                 {
                     _state.SendToPhoneIncludeClipboard = !_state.SendToPhoneIncludeClipboard;
                     RenderNow();
                 });
+
+                // "+ Pick files from PC" button above Done
+                var pickRect = new RectangleF(20, lh - 92, lw - 40, 32);
+                bool pickHov = _renderer.IsHovered(pickRect, _mouseX, _mouseY);
+                _renderer.FillRoundedRect(pickRect, 16.0f,
+                    light ? Color.FromArgb(pickHov ? 36 : 22, 12, 12, 14) : Color.FromArgb(pickHov ? 46 : 28, 255, 255, 255));
+                _renderer.DrawTextStr("+ Pick files from PC", pickRect, 10.0f, true, textPrimary, hAlign: StringAlignment.Center);
+                _renderer.AddHitRegion("qr-pick-files", pickRect, PickFilesFromPc);
 
                 // Full-width white pill "Done" button at bottom
                 var doneRect = new RectangleF(20, lh - 50, lw - 40, 34);
@@ -228,8 +264,47 @@ namespace OpenPixel.UI
                 _renderer.DrawTextStr("Done", doneRect, 10.6f, true, Color.FromArgb(255, 16, 16, 18), hAlign: StringAlignment.Center);
                 _renderer.AddHitRegion("qr-done", doneRect, ClosePopover);
 
+                _lastHoverId = _renderer.HoverId(_mouseX, _mouseY);
                 _renderer.EndLayeredFrame(Handle, Location, 252);
             }
+        }
+
+        private void PickFilesFromPc()
+        {
+            try
+            {
+                using var dlg = new OpenFileDialog
+                {
+                    Title = "Pick files to share via QR code",
+                    Multiselect = true,
+                    CheckFileExists = true
+                };
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                lock (_state.SyncRoot)
+                {
+                    foreach (string fullPath in dlg.FileNames)
+                    {
+                        if (string.IsNullOrWhiteSpace(fullPath) || !System.IO.File.Exists(fullPath)) continue;
+                        if (_state.ShelfFiles.Exists(f => string.Equals(f.FullPath, fullPath, StringComparison.OrdinalIgnoreCase)))
+                            continue;
+                        string ext = System.IO.Path.GetExtension(fullPath).ToLowerInvariant();
+                        long size = 0;
+                        try { size = new System.IO.FileInfo(fullPath).Length; } catch { }
+                        _state.ShelfFiles.Insert(0, new ShelfFileItem
+                        {
+                            FullPath = fullPath,
+                            DisplayName = System.IO.Path.GetFileName(fullPath),
+                            Extension = ext,
+                            FileSize = size,
+                            IsImage = ext is ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp"
+                        });
+                        if (_state.ShelfFiles.Count > 12) _state.ShelfFiles.RemoveAt(_state.ShelfFiles.Count - 1);
+                    }
+                }
+                ConfigManager.FlushPersistentCollectionsIfChanged(_state);
+                RenderNow();
+            }
+            catch { }
         }
 
         private void DrawCornerBrackets(RectangleF r, float len, Color color)
@@ -264,6 +339,18 @@ namespace OpenPixel.UI
             base.OnMouseMove(e);
             _mouseX = e.X / _uiScale;
             _mouseY = e.Y / _uiScale;
+            // Hover is the only pointer-driven state on this card, so a move only
+            // needs a frame when it enters or leaves a control - not on every
+            // WM_MOUSEMOVE, each of which used to re-blur the whole glass card.
+            if (_renderer.HoverId(_mouseX, _mouseY) != _lastHoverId) RenderNow();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (_lastHoverId.Length == 0) return;
+            _mouseX = -1000.0f;
+            _mouseY = -1000.0f;
             RenderNow();
         }
 

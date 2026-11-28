@@ -283,10 +283,13 @@ namespace OpenPixel.Rendering
             float dipX, float dipY, float dipW, float dipH,
             float blurRadiusPx, SurfaceTheme surfaceTheme,
             float cornerRadiusPx = -1.0f,
-            float topNotchFlarePx = 0.0f)
+            float topNotchFlarePx = 0.0f,
+            float cornerSheen = 1.0f,
+            float reuseWithoutCaptureMs = 0.0f,
+            float minRefreshIntervalMs = 0.0f)
         {
             if (_g == null) return false;
-            bool ok = _skiaGlass.Render(_g, screenRect, dipX, dipY, dipW, dipH, blurRadiusPx, surfaceTheme, cornerRadiusPx, topNotchFlarePx);
+            bool ok = _skiaGlass.Render(_g, screenRect, dipX, dipY, dipW, dipH, blurRadiusPx, surfaceTheme, cornerRadiusPx, topNotchFlarePx, cornerSheen, reuseWithoutCaptureMs, minRefreshIntervalMs);
             BackdropVariance = _skiaGlass.LastVariance;
             BackdropOutputHash = _skiaGlass.LastOutputHash;
             return ok;
@@ -1108,6 +1111,17 @@ namespace OpenPixel.Rendering
         }
 
         public bool IsHovered(RectangleF r, float dipX, float dipY) => r.Contains(dipX, dipY);
+
+        // Id of the hit region under the pointer, so a window can tell whether a
+        // pointer move actually changed any hover state before repainting.
+        public string HoverId(float dipX, float dipY)
+        {
+            for (int i = _hitRegions.Count - 1; i >= 0; --i)
+            {
+                if (_hitRegions[i].Rect.Contains(dipX, dipY)) return _hitRegions[i].Id;
+            }
+            return "";
+        }
 
         public bool DispatchClick(float dipX, float dipY)
         {

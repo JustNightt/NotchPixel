@@ -9,7 +9,7 @@ using OpenPixel.Rendering;
 namespace OpenPixel.UI
 {
     // ========================================================================
-    // 3-step first-launch onboarding wizard for NotchPixel.
+    // 3-step first-launch onboarding wizard for OpenPixel.
     // Pure black custom-chrome layered window matching the exact 3-page layout:
     //   Page 1: Welcome + Language selector
     //   Page 2: Start with Windows toggle
@@ -61,18 +61,6 @@ namespace OpenPixel.UI
             ("ar",     "\u0627\u0644\u0639\u0631\u0628\u064A\u0629")
         };
 
-        // 7x7 pixel-art 'N' matching the NotchPixel emblem.
-        private static readonly byte[,] PixelN =
-        {
-            { 1, 0, 0, 0, 0, 0, 1 },
-            { 1, 1, 0, 0, 0, 0, 1 },
-            { 1, 0, 1, 0, 0, 0, 1 },
-            { 1, 0, 0, 1, 0, 0, 1 },
-            { 1, 0, 0, 0, 1, 0, 1 },
-            { 1, 0, 0, 0, 0, 2, 1 },
-            { 1, 0, 0, 0, 0, 0, 1 }
-        };
-
         private static string AppVersionString
         {
             get
@@ -86,10 +74,10 @@ namespace OpenPixel.UI
         {
             _state = state;
             _onSettingsChanged = onSettingsChanged;
-            Text = "Welcome to NotchPixel";
+            Text = "Welcome to OpenPixel";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = true;
-            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? ""); } catch { }
+            try { Icon = BrandLogo.WindowIcon() ?? System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? ""); } catch { }
             TopMost = false;
             KeyPreview = true;
             StartPosition = FormStartPosition.Manual;
@@ -355,10 +343,10 @@ namespace OpenPixel.UI
                 _renderer.DrawRoundedRect(frame, 12.0f, outerBorder, 1.0f);
 
                 // ----------------------------------------------------------------
-                // Top Bar: small logo + bold "NotchPixel" + mono version + close X
+                // Top Bar: small logo + bold "OpenPixel" + mono version + close X
                 // ----------------------------------------------------------------
-                DrawNotchPixelBadge(new RectangleF(20.0f, 15.0f, 22.0f, 22.0f), 5.0f, small: true);
-                _renderer.DrawTextStr("NotchPixel", new RectangleF(50.0f, 13.0f, 100.0f, 26.0f), 13.5f, true, textPrimary);
+                DrawOpenPixelBadge(new RectangleF(20.0f, 15.0f, 22.0f, 22.0f), 5.0f, small: true);
+                _renderer.DrawTextStr("OpenPixel", new RectangleF(50.0f, 13.0f, 100.0f, 26.0f), 13.5f, true, textPrimary);
                 _renderer.DrawTextStr(AppVersionString, new RectangleF(138.0f, 15.0f, 110.0f, 24.0f), 9.5f, false, textMuted, mono: true);
 
                 var closeRect = new RectangleF(lw - 42.0f, 12.0f, 28.0f, 28.0f);
@@ -473,10 +461,10 @@ namespace OpenPixel.UI
             var s = _state.Settings;
 
             // Large 68x68 rounded dark square badge with glossy pill + pixel N
-            DrawNotchPixelBadge(new RectangleF(padX, 66.0f, 68.0f, 68.0f), 16.0f, small: false);
+            DrawOpenPixelBadge(new RectangleF(padX, 66.0f, 68.0f, 68.0f), 16.0f, small: false);
 
             // Title & subtitle
-            _renderer.DrawTextStr("Welcome to NotchPixel", new RectangleF(padX, 158.0f, contentW, 34.0f), 22.0f, true, textPrimary);
+            _renderer.DrawTextStr("Welcome to OpenPixel", new RectangleF(padX, 158.0f, contentW, 34.0f), 22.0f, true, textPrimary);
             _renderer.DrawTextStr(
                 "It lives at the top centre of your screen. Rest your pointer on it and it opens; move away and it closes.",
                 new RectangleF(padX, 198.0f, contentW, 44.0f), 11.2f, false, textSecondary, noWrap: false);
@@ -516,7 +504,7 @@ namespace OpenPixel.UI
                 new RectangleF(padX, 352.0f, contentW, 26.0f), 10.8f, true, textPrimary, noWrap: false);
 
             _renderer.DrawTextStr(
-                "Settings are one click away: the NotchPixel icon in the notification area, next to the clock.",
+                "Settings are one click away: the OpenPixel icon in the notification area, next to the clock.",
                 new RectangleF(padX, 392.0f, contentW, 42.0f), 10.8f, false, textSecondary, noWrap: false);
 
             return pillRect;
@@ -573,14 +561,14 @@ namespace OpenPixel.UI
 
             _renderer.DrawTextStr("Start with Windows?", new RectangleF(padX, 66.0f, contentW, 34.0f), 22.0f, true, textPrimary);
             _renderer.DrawTextStr(
-                "So the island is there every time you sign in. Without it, NotchPixel closes when you restart and stays closed until you open it again.",
+                "So the island is there every time you sign in. Without it, OpenPixel closes when you restart and stays closed until you open it again.",
                 new RectangleF(padX, 108.0f, contentW, 44.0f), 11.2f, false, textSecondary, noWrap: false);
 
             DrawDivider(padX, 166.0f, contentW, dividerColor);
 
             float y = 182.0f;
             DrawToggleRow(
-                "Start NotchPixel when you sign in",
+                "Start OpenPixel when you sign in",
                 "You can change this any time in Settings, General.",
                 padX, ref y, contentW,
                 s.LaunchAtStartup, "onboarding-startup",
@@ -771,7 +759,7 @@ namespace OpenPixel.UI
         }
 
         // Renders the rounded dark square icon containing the glossy pill + pixelated N logo.
-        private void DrawNotchPixelBadge(RectangleF rect, float radius, bool small)
+        private void DrawOpenPixelBadge(RectangleF rect, float radius, bool small)
         {
             Graphics g = _renderer.G;
             using (var path = CreateRoundedPath(rect, radius))
@@ -781,67 +769,9 @@ namespace OpenPixel.UI
             }
             _renderer.DrawRoundedRect(rect, radius, Color.FromArgb(255, 44, 44, 49), 1.0f);
 
-            // Inner glossy black pill
-            float pillW = rect.Width * (small ? 0.74f : 0.72f);
-            float pillH = rect.Height * (small ? 0.52f : 0.46f);
-            var pill = new RectangleF(
-                rect.X + (rect.Width - pillW) * 0.5f,
-                rect.Y + (rect.Height - pillH) * 0.5f,
-                pillW, pillH);
-            float pillR = pillH * 0.48f;
-
-            // Soft outer glow/shadow around pill
-            if (!small)
-            {
-                _renderer.FillRoundedRect(new RectangleF(pill.X, pill.Y + 1.5f, pill.Width, pill.Height), pillR, Color.FromArgb(140, 0, 0, 0));
-            }
-
-            using (var pPath = CreateRoundedPath(pill, pillR))
-            using (var pBrush = new LinearGradientBrush(pill, Color.FromArgb(255, 32, 32, 36), Color.FromArgb(255, 6, 6, 8), LinearGradientMode.Vertical))
-            {
-                g.FillPath(pBrush, pPath);
-            }
-
-            // Top specular highlight inside pill
-            if (!small)
-            {
-                var spec = new RectangleF(pill.X + 2.0f, pill.Y + 1.5f, pill.Width - 4.0f, pill.Height * 0.42f);
-                using var sPath = CreateRoundedPath(spec, pillR * 0.7f);
-                using var sBrush = new LinearGradientBrush(spec, Color.FromArgb(58, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), LinearGradientMode.Vertical);
-                g.FillPath(sBrush, sPath);
-            }
-
-            // Subtle metallic rim on pill
-            using (var rimPath = CreateRoundedPath(pill, pillR))
-            using (var rimBrush = new LinearGradientBrush(pill, Color.FromArgb(135, 165, 165, 175), Color.FromArgb(55, 70, 70, 78), LinearGradientMode.Vertical))
-            using (var rimPen = new Pen(rimBrush, small ? 0.8f : 1.15f))
-            {
-                g.DrawPath(rimPen, rimPath);
-            }
-
-            // Pixelated 'N' centered inside pill
-            int cols = 7;
-            int rows = 7;
-            float cell = small ? 1.25f : 3.2f;
-            float gridW = cols * cell;
-            float gridH = rows * cell;
-            float startX = pill.X + (pill.Width - gridW) * 0.5f;
-            float startY = pill.Y + (pill.Height - gridH) * 0.5f;
-
-            SmoothingMode prevMode = g.SmoothingMode;
-            g.SmoothingMode = SmoothingMode.None;
-            using var whiteBrush = new SolidBrush(Color.FromArgb(255, 245, 245, 247));
-            using var accentBrush = new SolidBrush(Color.FromArgb(255, 120, 214, 255));
-            for (int r = 0; r < rows; ++r)
-            {
-                for (int c = 0; c < cols; ++c)
-                {
-                    byte v = PixelN[r, c];
-                    if (v == 0) continue;
-                    g.FillRectangle(v == 2 ? accentBrush : whiteBrush, startX + c * cell, startY + r * cell, cell, cell);
-                }
-            }
-            g.SmoothingMode = prevMode;
+            // The supplied brand mark, centred on the chip.
+            float inset = rect.Width * (small ? 0.10f : 0.08f);
+            BrandLogo.Draw(g, RectangleF.Inflate(rect, -inset, -inset));
         }
 
         private static GraphicsPath CreateRoundedPath(RectangleF rect, float radius)

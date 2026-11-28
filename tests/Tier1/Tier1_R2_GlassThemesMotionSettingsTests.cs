@@ -579,10 +579,10 @@ public sealed class Tier1_R2_GlassThemesMotionSettingsTests
     }
 
     [Fact]
-    public void F09_Source_SettingsUsesNotchPixelUserFacingBranding()
+    public void F09_Source_SettingsUsesOpenPixelUserFacingBranding()
     {
-        IReadOnlyList<SourceMatch> settingsTitle = SourceInspector.FindMatchesInCSharp(@"Text\s*=\s*""[^""]*NotchPixel[^""]*Settings""");
-        Assert.True(settingsTitle.Count >= 1, "Expected NotchPixel user-facing branding in SettingsWindow title.");
+        IReadOnlyList<SourceMatch> settingsTitle = SourceInspector.FindMatchesInCSharp(@"Text\s*=\s*""[^""]*OpenPixel[^""]*Settings""");
+        Assert.True(settingsTitle.Count >= 1, "Expected OpenPixel user-facing branding in SettingsWindow title.");
     }
 
     [Fact]

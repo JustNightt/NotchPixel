@@ -7,6 +7,8 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -42,9 +44,10 @@ public final class DeckMediaNotificationService extends Service {
     private Handler handler;
     private ExecutorService netExecutor;
     private PinnedDeckClient deckClient;
+    private Bitmap brandLargeIcon;
 
     private String title = "Connected to PC";
-    private String artist = "NotchPixel Deck";
+    private String artist = "OpenPixel Deck";
     private boolean isPlaying = false;
     private long lastActiveElapsedMs = 0L;
 
@@ -86,17 +89,18 @@ public final class DeckMediaNotificationService extends Service {
         netExecutor = Executors.newSingleThreadExecutor();
         SecurePairingStore store = new SecurePairingStore(this);
         deckClient = new PinnedDeckClient(this, store);
+        brandLargeIcon = BitmapFactory.decodeResource(getResources(), R.drawable.ic_openpixel_large);
         lastActiveElapsedMs = SystemClock.elapsedRealtime();
 
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(
-                    CHANNEL_ID, "NotchPixel Deck Media", NotificationManager.IMPORTANCE_LOW);
+                    CHANNEL_ID, "OpenPixel Deck Media", NotificationManager.IMPORTANCE_LOW);
             ch.setDescription("Lock-screen controls for PC playback");
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) nm.createNotificationChannel(ch);
         }
 
-        mediaSession = new MediaSession(this, "NotchPixelDeckMedia");
+        mediaSession = new MediaSession(this, "OpenPixelDeckMedia");
         mediaSession.setCallback(new MediaSession.Callback() {
             @Override public void onPlay() { dispatchRemote("a=play"); }
             @Override public void onPause() { dispatchRemote("a=play"); }
@@ -126,7 +130,7 @@ public final class DeckMediaNotificationService extends Service {
                 String a = intent.getStringExtra("artist");
                 boolean p = intent.getBooleanExtra("playing", false);
                 title = (t == null || t.isEmpty()) ? "No active PC media" : t;
-                artist = (a == null || a.isEmpty()) ? "NotchPixel Deck" : a;
+                artist = (a == null || a.isEmpty()) ? "OpenPixel Deck" : a;
                 isPlaying = p;
                 if (isPlaying) lastActiveElapsedMs = SystemClock.elapsedRealtime();
             }
@@ -167,7 +171,8 @@ public final class DeckMediaNotificationService extends Service {
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
 
-        return b.setSmallIcon(R.drawable.ic_openpixel_deck)
+        return b.setSmallIcon(R.drawable.ic_openpixel_notification)
+                .setLargeIcon(brandLargeIcon)
                 .setContentTitle(title)
                 .setContentText(artist)
                 .setContentIntent(contentPi)

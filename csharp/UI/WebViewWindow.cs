@@ -13,7 +13,7 @@ using OpenPixel.Core;
 namespace OpenPixel.UI
 {
     // ========================================================================
-    // Floating Web Drawer (WebView2 / Edge engine) matching NotchPixel's
+    // Floating Web Drawer (WebView2 / Edge engine) matching OpenPixel's
     // dark rounded vertical browser window directly below the top resting pill.
     // ========================================================================
     public sealed class WebViewWindow : Form
@@ -40,7 +40,7 @@ namespace OpenPixel.UI
         public WebViewWindow(GlobalAppState state)
         {
             _state = state;
-            Text = "NotchPixel Web";
+            Text = "OpenPixel Web";
             FormBorderStyle = FormBorderStyle.None;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -23,11 +24,11 @@ namespace OpenPixel.Rendering
     {
         private const string LiquidGlassSksl = @"
 uniform shader u_blur;
-uniform shader u_raw;
 uniform float2 u_res;
 uniform float u_radius;
 uniform float u_flare; // >0 for top-docked notch with concave left/right hinges
 uniform float u_mode;  // 0 = LiquidGlass, 1 = CandyGlass, 2 = Acrylic
+uniform float u_sheen; // 0 = flat even rim, 1 = corner-concentrated specular
 
 float3 sdAndNormal(float2 fragCoord) {
     float2 halfSize = u_res * 0.5;
@@ -81,51 +82,28 @@ half4 main(float2 fragCoord) {
     float isAcrylic = step(1.5, u_mode);
     float isCandy = step(0.5, u_mode) * (1.0 - isAcrylic);
 
-    // Smooth curved glass bevel along the perimeter
-    float minDim = min(u_res.x, u_res.y);
-    float bevelW = clamp(minDim * 0.18, 3.5, 18.0);
-    float t = clamp(1.0 - d / bevelW, 0.0, 1.0);
+    // Pure clean blurred background with a whisper-thin specular edge shine (zero warping)
+    half3 rgb = u_blur.eval(clamp(fragCoord, float2(0.5), u_res - float2(0.5))).rgb;
 
-    // Subtle convex interior lens curve + clean bevel refraction (NO rainbow RGB splitting)
-    float2 pNorm = (fragCoord - halfSize) / max(halfSize, float2(1.0));
-    float r2 = clamp(dot(pNorm, pNorm), 0.0, 1.3);
-    float2 interiorWarp = pNorm * (r2 * 3.2) * (1.0 - isAcrylic) * (1.0 - t * 0.5);
-    float refractPx = pow(t, 1.9) * bevelW * 0.90 * (1.0 - isAcrylic);
-    float2 sampleCoord = clamp(fragCoord - n * refractPx - interiorWarp, float2(0.5), u_res - float2(0.5));
-
-    half3 blurCol = u_blur.eval(sampleCoord).rgb;
-    half3 rgb;
-    if (isAcrylic < 0.5 && t > 0.02) {
-        // Slightly crisper glass refraction right along the curved bevel
-        half3 rawCol = u_raw.eval(sampleCoord).rgb;
-        rgb = mix(blurCol, rawCol, half(pow(t, 1.6) * 0.32));
-    } else {
-        rgb = blurCol;
-    }
-
-    // Natural clean vibrancy
+    // Clean neutral frosted scrim so icons/text on the notch stay razor-sharp
     half luma = dot(rgb, half3(0.2126, 0.7152, 0.0722));
-    rgb = clamp(mix(half3(luma), rgb, half(1.12)), half3(0.0), half3(1.0));
+    half scrim = mix(half(0.74), half(0.56), clamp(luma * half(1.10), half(0.0), half(1.0)));
 
-    // Clean adaptive neutral contrast scrim
-    half scrim = mix(half(0.92), half(0.76), clamp(luma * half(1.20), half(0.0), half(1.0)));
-
-    // Crisp white glass corners & specular rim (concentrated on curved corners, suppressed on flush top bezel)
+    // Tiny subtle edge shine (suppressed along the flush top bezel)
     float topMask = u_flare > 0.5 ? smoothstep(0.0, 2.5, fragCoord.y) : 1.0;
-    float cornerFactor = abs(n.x * n.y) * 2.0; // peaks cleanly at the 45-degree rounded corners
-    float rimLine = smoothstep(2.2, 0.0, d) * topMask;
-    float innerBevelSheen = smoothstep(6.0, 0.0, d) * cornerFactor * 0.14 * topMask;
-    half whiteRim = half(rimLine * (0.14 + 0.24 * cornerFactor) + innerBevelSheen);
+    float cornerFactor = abs(n.x * n.y) * 2.0 * clamp(u_sheen, 0.0, 1.0);
+    float rimLine = smoothstep(1.1, 0.0, d) * topMask;
+    half whiteRim = half(rimLine * (0.018 + 0.028 * cornerFactor));
 
     half3 outCol;
     if (isAcrylic > 0.5) {
-        outCol = rgb * half(0.62) + half3(0.055, 0.058, 0.068) + half3(whiteRim * half(0.45));
+        outCol = rgb * half(0.56) + half3(0.044, 0.046, 0.054) + half3(whiteRim * half(0.40));
     } else if (isCandy > 0.5) {
-        outCol = rgb * half3(0.92, 0.74, 0.86) * scrim
-               + half3(0.072, 0.018, 0.056)
-               + half3(whiteRim * half(1.05), whiteRim * half(0.78), whiteRim * half(0.95));
+        outCol = rgb * half3(0.84, 0.72, 0.80) * scrim
+               + half3(0.040, 0.012, 0.032)
+               + half3(whiteRim * half(0.80), whiteRim * half(0.65), whiteRim * half(0.75));
     } else {
-        outCol = rgb * scrim + half3(whiteRim);
+        outCol = rgb * scrim + half3(0.025, 0.027, 0.033) + half3(whiteRim);
     }
 
     return half4(clamp(outCol, half3(0.0), half3(1.0)), half(1.0));
@@ -155,6 +133,12 @@ half4 main(float2 fragCoord) {
         private int _capBufW;
         private int _capBufH;
 
+        // Gaussian pre-blur target, kept across frames: allocating and clearing a
+        // surface per frame was pure overhead while the glass animates.
+        private SKSurface _blurSurface;
+        private int _blurSurfW;
+        private int _blurSurfH;
+
         private Bitmap _outputBitmap;
         private ulong _lastHash;
         private int _lastW;
@@ -162,14 +146,25 @@ half4 main(float2 fragCoord) {
         private float _lastBlur = -1.0f;
         private float _lastRadius = -1.0f;
         private float _lastFlare = -1.0f;
+        private float _lastSheen = 1.0f;
+        private Rectangle _lastScreenRect;
+        private float _lastDipW;
+        private float _lastDipH;
         private int _lastTintKey;
         private SurfaceTheme _lastTheme;
         private long _lastRecomputeMs;
 
         public double LastVariance { get; private set; }
         public ulong LastOutputHash { get; private set; }
+        // Profiling: how much CPU the lens itself costs (capture + blur + shader),
+        // ignoring frames that reuse a cached lens. Surfaced by --idle-test.
+        public static double LensComputeMs { get; private set; }
+        public static long LensComputeCount { get; private set; }
         public static string LastEffectError { get; private set; } = "";
         public static string LastRenderError { get; private set; } = "";
+        // Set while a screen capture tool (e.g. Snipping Tool) is active so glass
+        // surfaces reuse their last clean backdrop instead of capturing themselves.
+        public static volatile bool FreezeBackdropCapture;
 
         private static SKRuntimeEffect GetEffect()
         {
@@ -219,6 +214,31 @@ half4 main(float2 fragCoord) {
             _capBufW = w;
             _capBufH = h;
             return true;
+        }
+
+        private SKSurface EnsureBlurSurface(SKImageInfo info)
+        {
+            if (_blurSurface != null && _blurSurfW == info.Width && _blurSurfH == info.Height)
+                return _blurSurface;
+
+            _blurSurface?.Dispose();
+            _blurSurface = null;
+            _blurSurfW = 0;
+            _blurSurfH = 0;
+            try
+            {
+                _blurSurface = SKSurface.Create(info);
+            }
+            catch
+            {
+                return null;
+            }
+            if (_blurSurface != null)
+            {
+                _blurSurfW = info.Width;
+                _blurSurfH = info.Height;
+            }
+            return _blurSurface;
         }
 
         private void ReleaseCaptureBuffer()
@@ -412,13 +432,29 @@ half4 main(float2 fragCoord) {
             try
             {
                 float safeBlur = Math.Clamp(blurRadiusPx, 6.0f, 40.0f);
-                int capW = Math.Clamp(screenRect.Width / 3, 48, 320);
-                int capH = Math.Clamp(screenRect.Height / 3, 36, 240);
+                // Compact capture for heavily frosted panels (Settings & Taskbar): 4x faster
+                // CPU Gaussian blur than 460x320 while looking identically smooth when blurred.
+                int capW = Math.Clamp((int)MathF.Round(screenRect.Width * 0.22f), 48, 220);
+                int capH = Math.Clamp((int)MathF.Round(screenRect.Height * 0.22f), 20, 150);
                 bool isPinkTint = tintOverlay.R > tintOverlay.G + 14;
                 int tintKey = tintOverlay.ToArgb();
 
                 long now = Environment.TickCount64;
-                if (_outputBitmap != null && tintKey == _lastTintKey && _lastRadius < 0.0f && now - _lastRecomputeMs < 35)
+                if (FreezeBackdropCapture && _outputBitmap != null)
+                {
+                    DrawOutput(targetGraphics, dipX, dipY, dipW, dipH);
+                    return true;
+                }
+
+                // When the panel hasn't moved or resized, hold the cached frosted backdrop
+                // for 1.2s so hovering/scrolling in Settings runs at zero blur CPU cost.
+                bool moved = screenRect != _lastScreenRect;
+                long reuseMs = moved ? 60 : 1200;
+                if (_outputBitmap != null &&
+                    tintKey == _lastTintKey &&
+                    MathF.Abs(safeBlur - _lastBlur) < 0.4f &&
+                    _lastRadius < 0.0f &&
+                    now - _lastRecomputeMs < reuseMs)
                 {
                     DrawOutput(targetGraphics, dipX, dipY, dipW, dipH);
                     return true;
@@ -442,6 +478,7 @@ half4 main(float2 fragCoord) {
                     _lastH = capH;
                     _lastBlur = safeBlur;
                     _lastRadius = -1.0f;
+                    _lastScreenRect = screenRect;
                     _lastTintKey = tintKey;
                     _lastRecomputeMs = now;
 
@@ -456,7 +493,10 @@ half4 main(float2 fragCoord) {
                     using SKImage rawImg = SKImage.FromPixels(rawInfo, _capBits, capW * 4);
                     if (rawImg == null) return false;
 
-                    float sigma = Math.Clamp(safeBlur * 0.38f, 3.0f, 15.0f);
+                    // Keep the physical blur identical to the old capture scale, so a
+                    // sharper capture does not read as a sharper (less frosted) panel.
+                    float capScale = (float)capW / Math.Max(1, screenRect.Width);
+                    float sigma = Math.Clamp(safeBlur * 0.38f * capScale * 3.0f, 3.0f, 20.0f);
                     BitmapData bd = _outputBitmap.LockBits(new Rectangle(0, 0, capW, capH), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
                     try
                     {
@@ -495,7 +535,10 @@ half4 main(float2 fragCoord) {
             float dipX, float dipY, float dipW, float dipH,
             float blurRadiusPx, SurfaceTheme surfaceTheme,
             float cornerRadiusPx = -1.0f,
-            float topNotchFlarePx = 0.0f)
+            float topNotchFlarePx = 0.0f,
+            float cornerSheen = 1.0f,
+            float reuseWithoutCaptureMs = 0.0f,
+            float minRefreshIntervalMs = 0.0f)
         {
             if (targetGraphics == null || dipW <= 4.0f || dipH <= 3.0f) return false;
             if (screenRect.Width <= 8 || screenRect.Height <= 3 || screenRect.Width > 4096 || screenRect.Height > 4096)
@@ -509,20 +552,44 @@ half4 main(float2 fragCoord) {
                 float safeBlur = Math.Clamp(blurRadiusPx, 0.0f, 40.0f);
                 long now = Environment.TickCount64;
 
-                if (_outputBitmap != null &&
-                    surfaceTheme == _lastTheme &&
-                    MathF.Abs(safeBlur - _lastBlur) < 0.4f &&
-                    _lastRadius >= 0.0f &&
-                    now - _lastRecomputeMs < 24)
+                // Glass runs on its own slower clock than the surface it sits on.
+                // Sampling the desktop and running the per-pixel lens for every 60 fps
+                // animation frame is what made the island stutter on slower PCs, so the
+                // cached lens is just scaled into the current rect between refreshes:
+                // the shape keeps moving at full frame rate, the backdrop updates at
+                // minRefreshIntervalMs. A still rect/size may hold the last lens even
+                // longer (reuseWithoutCaptureMs), which is the zero-CPU resting case.
+                if (FreezeBackdropCapture && _outputBitmap != null)
                 {
                     DrawOutput(targetGraphics, dipX, dipY, dipW, dipH);
                     return true;
                 }
 
-                // Smooth crisp resolution (up to 420x260 with HALFTONE + full-capW blur -> zero pixelation!)
-                float downScale = MathF.Min(1.0f, MathF.Min(420.0f / Math.Max(1, screenRect.Width), 260.0f / Math.Max(1, screenRect.Height)));
-                int capW = Math.Clamp((int)MathF.Round(screenRect.Width * downScale), 24, 420);
-                int capH = Math.Clamp((int)MathF.Round(screenRect.Height * downScale), 6, 260);
+                float refreshMs = minRefreshIntervalMs > 0.0f
+                    ? Math.Clamp(minRefreshIntervalMs, 16.0f, 2000.0f)
+                    : 90.0f;
+                bool sameRect = screenRect == _lastScreenRect;
+                bool sameSize = MathF.Abs(dipW - _lastDipW) < 0.6f && MathF.Abs(dipH - _lastDipH) < 0.6f;
+                float windowMs = (sameRect && sameSize) ? MathF.Max(refreshMs, reuseWithoutCaptureMs) : refreshMs;
+                if (_outputBitmap != null &&
+                    surfaceTheme == _lastTheme &&
+                    MathF.Abs(safeBlur - _lastBlur) < 0.4f &&
+                    MathF.Abs(cornerSheen - _lastSheen) < 0.01f &&
+                    _lastRadius >= 0.0f &&
+                    now - _lastRecomputeMs < windowMs)
+                {
+                    DrawOutput(targetGraphics, dipX, dipY, dipW, dipH);
+                    return true;
+                }
+
+                // Skia's raster runtime-effect interpreter is the single most expensive
+                // step in a glass frame. A 4.5k-pixel lens cuts CPU shader time in half
+                // while keeping the blurred backdrop smooth, and the crisp rim is stroked
+                // at native resolution on top.
+                double captureArea = Math.Max(1.0, (double)screenRect.Width * screenRect.Height);
+                float downScale = (float)Math.Min(1.0, Math.Sqrt(4500.0 / captureArea));
+                int capW = Math.Clamp((int)MathF.Round(screenRect.Width * downScale), 24, 240);
+                int capH = Math.Clamp((int)MathF.Round(screenRect.Height * downScale), 6, 140);
                 int totalPixels = capW * capH;
 
                 if (!CaptureBackdropZeroCopy(screenRect, capW, capH, surfaceTheme == SurfaceTheme.CandyGlass, out ulong hash))
@@ -543,17 +610,23 @@ half4 main(float2 fragCoord) {
                                  MathF.Abs(safeBlur - _lastBlur) < 0.4f &&
                                  MathF.Abs(effectiveRadius - _lastRadius) < 0.8f &&
                                  MathF.Abs(effectiveFlare - _lastFlare) < 0.5f &&
+                                 MathF.Abs(cornerSheen - _lastSheen) < 0.01f &&
                                  surfaceTheme == _lastTheme &&
                                  _outputBitmap != null);
 
                 if (!cacheHit)
                 {
+                    long lensStart = Stopwatch.GetTimestamp();
                     _lastHash = hash;
                     _lastW = capW;
                     _lastH = capH;
                     _lastBlur = safeBlur;
                     _lastRadius = effectiveRadius;
                     _lastFlare = effectiveFlare;
+                    _lastSheen = cornerSheen;
+                    _lastScreenRect = screenRect;
+                    _lastDipW = dipW;
+                    _lastDipH = dipH;
                     _lastTheme = surfaceTheme;
                     _lastTintKey = 0;
                     _lastRecomputeMs = now;
@@ -563,10 +636,10 @@ half4 main(float2 fragCoord) {
                     using SKImage rawImg = SKImage.FromPixels(rawInfo, _capBits, capW * 4);
                     if (rawImg == null) return false;
 
-                    // Full-capW smooth Gaussian blur (no blocky half-res downsampling!)
+                    // Smooth frosted Gaussian blur (blurs the background cleanly without distorting the notch)
                     float sigma = surfaceTheme == SurfaceTheme.Acrylic
-                        ? Math.Clamp(safeBlur * 0.44f * scaleX, 2.5f, 15.0f)
-                        : Math.Clamp(safeBlur * 0.16f * scaleX, 0.0f, 7.0f);
+                        ? Math.Clamp(safeBlur * 0.46f * scaleX, 2.5f, 15.0f)
+                        : Math.Clamp(safeBlur * 0.34f * scaleX, 1.8f, 12.0f);
 
                     var sampling = new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None);
                     SKImage blurImg = null;
@@ -575,7 +648,7 @@ half4 main(float2 fragCoord) {
                     {
                         if (sigma > 0.20f)
                         {
-                            using var blurSurf = SKSurface.Create(premulInfo);
+                            SKSurface blurSurf = EnsureBlurSurface(premulInfo);
                             if (blurSurf == null) return false;
                             blurSurf.Canvas.Clear(SKColors.Transparent);
                             using SKImageFilter blurFilter = SKImageFilter.CreateBlur(sigma, sigma);
@@ -590,20 +663,18 @@ half4 main(float2 fragCoord) {
                             blurShader = rawImg.ToShader(SKShaderTileMode.Clamp, SKShaderTileMode.Clamp, sampling);
                         }
 
-                        using SKShader rawShader = rawImg.ToShader(SKShaderTileMode.Clamp, SKShaderTileMode.Clamp, sampling);
-
                         var uniforms = new SKRuntimeEffectUniforms(effect)
                         {
                             ["u_res"] = new[] { (float)capW, (float)capH },
                             ["u_radius"] = effectiveRadius,
                             ["u_flare"] = effectiveFlare,
                             ["u_mode"] = surfaceTheme == SurfaceTheme.Acrylic ? 2.0f
-                                       : (surfaceTheme == SurfaceTheme.CandyGlass ? 1.0f : 0.0f)
+                                       : (surfaceTheme == SurfaceTheme.CandyGlass ? 1.0f : 0.0f),
+                            ["u_sheen"] = Math.Clamp(cornerSheen, 0.0f, 1.0f)
                         };
                         var children = new SKRuntimeEffectChildren(effect)
                         {
-                            ["u_blur"] = blurShader,
-                            ["u_raw"] = rawShader
+                            ["u_blur"] = blurShader
                         };
 
                         using SKShader finalShader = effect.ToShader(uniforms, children);
@@ -626,7 +697,7 @@ half4 main(float2 fragCoord) {
                             double lumaSum = 0, lumaSqSum = 0;
                             int sampleCount = 0;
                             ulong outHash = 14695981039346656037UL;
-                            int sampleStep = Math.Max(1, totalPixels / 128);
+                            int sampleStep = Math.Max(1, totalPixels / 32);
                             for (int idx = 0; idx < totalPixels; idx += sampleStep)
                             {
                                 uint px = unchecked((uint)Marshal.ReadInt32(bd.Scan0, idx * 4));
@@ -651,9 +722,19 @@ half4 main(float2 fragCoord) {
                     }
                     finally
                     {
+                        LensComputeMs += Stopwatch.GetElapsedTime(lensStart).TotalMilliseconds;
+                        ++LensComputeCount;
                         blurShader?.Dispose();
                         blurImg?.Dispose();
                     }
+                }
+
+                else
+                {
+                    // The desktop behind did not change enough to redo the lens, but the
+                    // capture already happened: hold this frame for a full refresh window
+                    // instead of grabbing the screen again on the next tick.
+                    _lastRecomputeMs = now;
                 }
 
                 DrawOutput(targetGraphics, dipX, dipY, dipW, dipH);
@@ -670,7 +751,9 @@ half4 main(float2 fragCoord) {
         {
             if (_outputBitmap == null) return;
             var prevInterp = targetGraphics.InterpolationMode;
-            targetGraphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            // The source is already blurred, so plain bilinear is indistinguishable from
+            // HighQualityBilinear but cheaper — and this draw now happens on every frame.
+            targetGraphics.InterpolationMode = InterpolationMode.Bilinear;
             targetGraphics.DrawImage(_outputBitmap, new RectangleF(dipX, dipY, dipW, dipH));
             targetGraphics.InterpolationMode = prevInterp;
         }
@@ -678,6 +761,10 @@ half4 main(float2 fragCoord) {
         public void Dispose()
         {
             ReleaseCaptureBuffer();
+            _blurSurface?.Dispose();
+            _blurSurface = null;
+            _blurSurfW = 0;
+            _blurSurfH = 0;
             _outputBitmap?.Dispose();
             _outputBitmap = null;
         }

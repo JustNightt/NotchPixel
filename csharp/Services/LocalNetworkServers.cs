@@ -306,6 +306,24 @@ namespace OpenPixel.Services
             return codeStr;
         }
 
+        // The QR in the "Send to your phone" card has to install OpenPixel on the
+        // phone, so it carries the published Android build instead of a custom
+        // scheme (a camera app cannot open openpixel-deck://) or the shelf page.
+        public const string AndroidAppDownloadUrl =
+            "https://github.com/JustNightt/NotchPixel-New/releases/latest/download/main.apk";
+
+        public static string BuildShelfShareUrl(GlobalAppState state)
+        {
+            if (state == null) return "http://127.0.0.1:47824/shelf";
+            RefreshNetworkStateIfStale(state);
+            lock (state.SyncRoot)
+            {
+                string ip = string.IsNullOrWhiteSpace(state.LocalPrivateIp) ? "127.0.0.1" : state.LocalPrivateIp;
+                int port = state.Settings.PcDeckPort > 0 ? state.Settings.PcDeckPort : 47824;
+                return $"http://{ip}:{port}/shelf";
+            }
+        }
+
         public static string BuildDeckPairingQrPayload(GlobalAppState state)
         {
             EnsurePcTlsCertificate(state);
@@ -313,7 +331,7 @@ namespace OpenPixel.Services
             {
                 // Only the fields the phone scanner consumes; keeping the payload short
                 // lets the code stay at a large, scannable module size (<= 213 bytes).
-                return $"notchpixel-deck://pair?ip={state.LocalPrivateIp}&port={state.Settings.PcDeckTlsPort}&code={state.ActivePairingCode}&cert={state.PcCertFingerprint}";
+                return $"openpixel-deck://pair?ip={state.LocalPrivateIp}&port={state.Settings.PcDeckTlsPort}&code={state.ActivePairingCode}&cert={state.PcCertFingerprint}";
             }
         }
 
@@ -632,7 +650,7 @@ namespace OpenPixel.Services
                 {
                     using var form = new Form
                     {
-                        Text = "NotchPixel Deck — Pairing Request",
+                        Text = "OpenPixel Deck — Pairing Request",
                         Width = 420,
                         Height = 230,
                         FormBorderStyle = FormBorderStyle.FixedDialog,
@@ -647,7 +665,7 @@ namespace OpenPixel.Services
 
                     var lblTitle = new Label
                     {
-                        Text = "Allow new NotchPixel Deck device?",
+                        Text = "Allow new OpenPixel Deck device?",
                         Left = 20,
                         Top = 18,
                         Width = 370,
@@ -756,15 +774,58 @@ namespace OpenPixel.Services
             if (path.Equals("/shelf", StringComparison.OrdinalIgnoreCase))
             {
                 var sb = new StringBuilder();
-                sb.Append("<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>NotchPixel Shelf</title>");
-                sb.Append("<style>body{background:#0b0b0c;color:#efede8;font-family:system-ui,sans-serif;padding:20px}a{display:block;background:#18181b;color:#efede8;padding:16px;border-radius:14px;margin-bottom:10px;text-decoration:none}</style></head><body><h2>NotchPixel Shelf &middot; Files to your phone</h2>");
+                sb.Append("<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>OpenPixel Files</title>");
+                sb.Append("<style>");
+                sb.Append("*{box-sizing:border-box}body{margin:0;background:#0b0b0d;color:#f4f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:22px 18px 40px;max-width:560px;margin-inline:auto}");
+                sb.Append(".top{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}h1{font-size:20px;margin:0;font-weight:700}.sub{color:#8e8e98;font-size:13px;margin:4px 0 0}");
+                sb.Append(".btn{background:#232329;color:#f4f4f6;border:1px solid #35353e;border-radius:10px;padding:8px 14px;font-size:13px;font-weight:600;text-decoration:none;cursor:pointer}");
+                sb.Append(".card{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#16161a;border:1px solid #282830;padding:14px 16px;border-radius:14px;margin-bottom:10px;text-decoration:none;color:#f4f4f6}");
+                sb.Append(".card:active{background:#202026}.fname{font-size:15px;font-weight:600;word-break:break-word}.fsize{font-size:12px;color:#8e8e98;margin-top:2px}");
+                sb.Append(".dl{background:#f4f4f6;color:#0b0b0d;padding:7px 14px;border-radius:99px;font-size:13px;font-weight:700;white-space:nowrap}");
+                sb.Append(".empty{background:#16161a;border:1px dashed #32323c;border-radius:14px;padding:24px;text-align:center;color:#9898a2;font-size:14px;line-height:1.5}");
+                sb.Append(".clip{background:#16161a;border:1px solid #282830;border-radius:14px;padding:14px 16px;margin-top:18px}.clip pre{white-space:pre-wrap;word-break:break-word;margin:8px 0 0;font-family:inherit;font-size:14px;color:#dcdce2}");
+                sb.Append("</style></head><body>");
+                sb.Append("<div class='top'><div><h1>Files on this PC</h1><div class='sub'>Direct Wi-Fi transfer &middot; No app required</div></div><a class='btn' href='/shelf'>Refresh</a></div>");
+                string latestClip = "";
+                bool includeClip = false;
                 lock (state.SyncRoot)
                 {
-                    for (int i = 0; i < state.ShelfFiles.Count; ++i)
+                    includeClip = state.SendToPhoneIncludeClipboard;
+                    if (includeClip && state.ClipboardHistory.Count > 0)
                     {
-                        string fn = WebUtility.HtmlEncode(state.ShelfFiles[i].DisplayName);
-                        sb.Append($"<a href='/download/{i}' download='{fn}'><strong>{fn}</strong></a>");
+                        for (int c = 0; c < state.ClipboardHistory.Count; ++c)
+                        {
+                            if (!string.IsNullOrWhiteSpace(state.ClipboardHistory[c].Text))
+                            {
+                                latestClip = state.ClipboardHistory[c].Text;
+                                break;
+                            }
+                        }
                     }
+                    if (state.ShelfFiles.Count == 0)
+                    {
+                        sb.Append("<div class='empty'>No files on the PC shelf yet.<br>Drop files on the OpenPixel island or click <strong>+ Pick files from PC</strong> in the QR card, then tap Refresh.</div>");
+                    }
+                    else
+                    {
+                        for (int i = 0; i < state.ShelfFiles.Count; ++i)
+                        {
+                            var sf = state.ShelfFiles[i];
+                            string fn = WebUtility.HtmlEncode(sf.DisplayName);
+                            long bytes = sf.FileSize;
+                            string sizeTxt = bytes >= 1024L * 1024L ? $"{bytes / (1024.0 * 1024.0):0.#} MB"
+                                           : bytes >= 1024L ? $"{bytes / 1024.0:0.#} KB"
+                                           : $"{bytes} B";
+                            sb.Append($"<a class='card' href='/download/{i}' download='{fn}'><div><div class='fname'>{fn}</div><div class='fsize'>{sizeTxt}</div></div><span class='dl'>Download</span></a>");
+                        }
+                    }
+                }
+                if (includeClip && !string.IsNullOrEmpty(latestClip))
+                {
+                    string encClip = WebUtility.HtmlEncode(latestClip);
+                    sb.Append("<div class='clip'><div style='display:flex;justify-content:space-between;align-items:center'><strong>PC Clipboard</strong><button class='btn' onclick='navigator.clipboard.writeText(document.getElementById(\"cp\").innerText);this.innerText=\"Copied\"'>Copy</button></div><pre id='cp'>");
+                    sb.Append(encClip);
+                    sb.Append("</pre></div>");
                 }
                 sb.Append("</body></html>");
                 return ("200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes(sb.ToString()), "");
@@ -880,14 +941,14 @@ namespace OpenPixel.Services
                         state.Notifications.Insert(0, new NotificationItem
                         {
                             Id = ConfigManager.GetTickMs(),
-                            AppName = "NotchPixel Deck",
+                            AppName = "OpenPixel Deck",
                             Title = $"Pair request: {deviceName}",
                             Body = $"{model} ({osVer}) from {remoteIp}",
                             TimeStr = DateTime.Now.ToString("HH:mm"),
                             RelativeStr = "Just now"
                         });
                         state.ToastPopupType = TopPopupType.Notice;
-                        state.ToastTitle = "NotchPixel Deck Pairing";
+                        state.ToastTitle = "OpenPixel Deck Pairing";
                         state.ToastSubtitle = $"Approve {deviceName} ({model})?";
                         state.ToastAccent = Color.FromArgb(255, 43, 228, 234);
                         state.ToastIsReminder = false;
@@ -1457,7 +1518,7 @@ namespace OpenPixel.Services
                 return ("200 OK", "application/json", Encoding.UTF8.GetBytes("{\"ok\":true}"), "");
             }
 
-            return ("200 OK", "application/json", Encoding.UTF8.GetBytes("{\"ok\":true,\"service\":\"NotchPixelDeck\"}"), "");
+            return ("200 OK", "application/json", Encoding.UTF8.GetBytes("{\"ok\":true,\"service\":\"OpenPixelDeck\"}"), "");
         }
 
         private static GlobalAppState _activeState;

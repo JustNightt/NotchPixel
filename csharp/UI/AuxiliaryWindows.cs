@@ -53,10 +53,13 @@ namespace OpenPixel.UI
             int scale = Math.Clamp(state.Settings.DayClockScalePercent, 50, 200);
             var rec = state.Settings.PinnedWidgets?.Find(p => p != null && p.Type == (int)WidgetType.DayClock);
             if (rec != null) rec.ScalePercent = scale;
-            var form = _widgets.Find(w => !w.IsDisposed && w.WidgetType == WidgetType.DayClock);
-            if (form != null)
+            Color widgetCol = Color.FromArgb(state.Settings.DayClockAccentColorArgb);
+            foreach (var form in _widgets)
             {
-                if (form.ScalePercent != scale) form.ApplyScale(scale);
+                if (form == null || form.IsDisposed) continue;
+                form.CustomAccent = widgetCol;
+                if (form.WidgetType == WidgetType.DayClock && form.ScalePercent != scale)
+                    form.ApplyScale(scale);
                 form.RenderNow();
             }
         }
@@ -547,8 +550,8 @@ namespace OpenPixel.UI
     // ========================================================================
     public sealed class BottomTaskbarForm : Form
     {
-        private const int BarHeight = 46;
-        private const int BottomMargin = 0;
+        private const int BarHeight = 58;
+        private const int BottomMargin = 10;
 
         private readonly GlobalAppState _state;
         private readonly LiquidGlassRenderer _renderer = new();
@@ -587,7 +590,9 @@ namespace OpenPixel.UI
             TopMost = true;
             AllowDrop = true;
             StartPosition = FormStartPosition.Manual;
-            Bounds = new Rectangle(0, 0, 542, BarHeight);
+            Rectangle mon = TargetMonitor().Bounds;
+            int initW = 560;
+            Bounds = new Rectangle(mon.Left + (mon.Width - initW) / 2, mon.Bottom - BarHeight - BottomMargin, initW, BarHeight);
 
             _animTimer.Tick += (_, _) => StepTaskbarAnimations();
             _animTimer.Start();
@@ -772,17 +777,17 @@ namespace OpenPixel.UI
 
         private int MeasureWidth(int apps, int tray)
         {
-            int width = 16;               // left margin + flare allowance
-            width += 30 + 8;              // start
-            width += apps * 38;           // app slots
-            if (_state.Media.HasSession) width += 48; // inline mini album art + play/pause
-            width += 6 + 1 + 6;           // divider
-            width += tray * 22;           // tray icons
-            width += 22;                  // overflow chevron
-            width += 22 + 22 + 24;        // wifi + volume + battery
-            width += 8 + 86;              // clock block
+            int width = 20;               // left padding
+            width += 38 + 10;             // start button
+            width += apps * 46;           // app slots
+            if (_state.Media.HasSession) width += 60; // inline mini album art + play/pause
             width += 8 + 1 + 8;           // divider
-            width += 26 + 14;             // bell + show desktop strip + right flare
+            width += tray * 26;           // tray icons
+            width += 24;                  // overflow chevron
+            width += 24 + 24 + 26;        // wifi + volume + battery
+            width += 10 + 94;             // clock block
+            width += 8 + 1 + 8;           // divider
+            width += 34 + 18;             // bell + show desktop strip + right padding
             return width;
         }
 
@@ -802,7 +807,7 @@ namespace OpenPixel.UI
             IReadOnlyList<Bitmap> tray = TrayIcons.Snapshot();
             int trayCount = _trayExpanded ? Math.Min(tray.Count, 12) : Math.Min(tray.Count, 4);
             Rectangle monitor = TargetMonitor().Bounds;
-            int maxFitApps = Math.Max(4, Math.Min(16, (monitor.Width - 360) / 38));
+            int maxFitApps = Math.Max(4, Math.Min(16, (monitor.Width - 420) / 46));
             List<TaskbarApp> dockApps = TaskbarApps.DockItems(maxFitApps);
 
             int width = MeasureWidth(dockApps.Count, trayCount);
@@ -818,7 +823,9 @@ namespace OpenPixel.UI
             _hoverZones.Clear();
 
             ThemeSpec theme = ThemeSpec.Get(_state.Settings.Theme);
-            using GraphicsPath path = _renderer.CreateBottomTaskbarNotchPath(8, 2, Width - 16, Height - 2, 16 * _state.Settings.CornerRadiusScale);
+            var barRect = new RectangleF(2, 2, Width - 4, Height - 4);
+            float pillR = Math.Min((Height - 4) * 0.5f, 20.0f * Math.Clamp(_state.Settings.CornerRadiusScale, 0.4f, 1.4f));
+            using GraphicsPath path = _renderer.CreateIslandOrNotchPath(barRect.X, barRect.Y, barRect.Width, barRect.Height, pillR, 0.0f, EdgePlacement.TopCenter);
             Graphics g = _renderer.G;
             Region prev = g.Clip;
             g.SetClip(path, CombineMode.Replace);
@@ -826,88 +833,99 @@ namespace OpenPixel.UI
             bool drewGlass = false;
             if (theme.IsGlass || _state.Settings.Theme == SurfaceTheme.Acrylic)
             {
-                drewGlass = _renderer.RenderLiquidGlassBackdrop(Bounds, 0, 0, Width, Height,
-                    _state.Settings.GlassBlurRadius, _state.Settings.Theme,
-                    16.0f * _state.Settings.CornerRadiusScale * _renderer.DpiScale);
+                // Clean frosted blurred background with subtle tint (no heavy refraction distortion)
+                Color frostTint = _state.Settings.Theme == SurfaceTheme.CandyGlass
+                    ? Color.FromArgb(156, 44, 16, 36)
+                    : Color.FromArgb(168, 12, 13, 18);
+                drewGlass = _renderer.RenderBlurBackdrop(Bounds, 0, 0, Width, Height,
+                    MathF.Max(16.0f, _state.Settings.GlassBlurRadius), frostTint);
             }
             if (!drewGlass)
             {
                 Color solidFill = _state.Settings.Theme == SurfaceTheme.CandyGlass
-                    ? Color.FromArgb(242, 34, 18, 36)
-                    : (theme.IsGlass ? Color.FromArgb(242, 14, 15, 20) : theme.Fill);
+                    ? Color.FromArgb(240, 34, 18, 36)
+                    : (theme.IsGlass ? Color.FromArgb(236, 14, 15, 20) : theme.Fill);
                 using var fillBrush = new SolidBrush(solidFill);
                 g.FillPath(fillBrush, path);
             }
+            else
+            {
+                // Whisper-subtle top-edge glass shine
+                using var shineBrush = new LinearGradientBrush(
+                    new RectangleF(barRect.X, barRect.Y, barRect.Width, barRect.Height * 0.45f),
+                    Color.FromArgb(24, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), 90.0f);
+                g.FillRectangle(shineBrush, barRect.X, barRect.Y, barRect.Width, barRect.Height * 0.45f);
+            }
 
             float cy = Height * 0.5f;
-            float cursor = 18.0f;
+            float cursor = 14.0f;
 
-            // Start (crisp white 2x2 grid matching reference screenshot)
-            var startBtn = new RectangleF(cursor, cy - 15, 30, 30);
+            // Start button
+            var startBtn = new RectangleF(cursor, cy - 19, 38, 38);
             _hoverZones.Add((startBtn, "Start", null));
             float startHover = Animate("tb-start", _renderer.IsHovered(startBtn, _mouseX, _mouseY) ? 1.0f : 0.0f);
             if (startHover > 0.01f)
-                _renderer.FillRoundedRect(startBtn, 8, Color.FromArgb((int)(28 * startHover), 255, 255, 255));
-            _renderer.DrawLucideIcon("layout-grid", startBtn.X + 15, cy, 16, theme.TextPrimary);
+                _renderer.FillRoundedRect(startBtn, 10, Color.FromArgb((int)(28 * startHover), 255, 255, 255));
+            _renderer.DrawLucideIcon("layout-grid", startBtn.X + 19, cy, 19, theme.TextPrimary);
             _renderer.AddHitRegion("tb-start", startBtn, OpenStartMenu);
-            cursor += 30 + 8;
+            cursor += 38 + 10;
 
-            // Pinned + running apps with their real icons, live indicators & unread badges
+            // Pinned + running apps with crisp icons, live indicators & unread badges
             for (int i = 0; i < dockApps.Count; ++i)
             {
                 TaskbarApp app = dockApps[i];
-                var slot = new RectangleF(cursor, cy - 16, 34, 32);
+                var slot = new RectangleF(cursor, cy - 21, 42, 42);
                 _dragZones.Add((slot, app, false));
                 float hover = Animate($"dock-{i}", _renderer.IsHovered(slot, _mouseX, _mouseY) ? 1.0f : 0.0f);
-                float mag = (_state.Settings.TaskbarDockMagnification ? 4.0f : 0.0f) * hover;
-                var box = new RectangleF(slot.X - mag, slot.Y - mag * 1.3f, slot.Width + mag * 2, slot.Height + mag * 1.8f);
+                float mag = (_state.Settings.TaskbarDockMagnification ? 4.5f : 0.0f) * hover;
+                var box = new RectangleF(slot.X - mag * 0.6f, slot.Y - mag * 0.6f, slot.Width + mag * 1.2f, slot.Height + mag * 1.2f);
                 if (hover > 0.01f || app.IsActive)
                 {
-                    int bgAlpha = app.IsActive ? 26 : (int)(24 * hover);
-                    _renderer.FillRoundedRect(box, 8 + hover, Color.FromArgb(bgAlpha, 255, 255, 255));
+                    int bgAlpha = app.IsActive ? 28 : (int)(24 * hover);
+                    _renderer.FillRoundedRect(box, 10 + hover, Color.FromArgb(bgAlpha, 255, 255, 255));
                 }
 
                 Bitmap icon = AppIcons.ForPinnedShortcut(app.LaunchPath, app.Window);
                 if (icon != null)
                 {
-                    float side = 23.0f + mag * 1.1f;
+                    float side = 28.0f + mag * 1.0f;
                     g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    g.DrawImage(icon, slot.X + (slot.Width - side) * 0.5f, slot.Y + (slot.Height - side) * 0.5f - mag * 0.35f, side, side);
+                    g.DrawImage(icon, slot.X + (slot.Width - side) * 0.5f, slot.Y + (slot.Height - side) * 0.5f - mag * 0.3f, side, side);
                 }
                 else
                 {
-                    _renderer.FillCircle(slot.X + 17, slot.Y + 16 - mag * 0.4f, 7.0f + mag * 0.5f,
+                    _renderer.FillCircle(slot.X + 21, slot.Y + 21 - mag * 0.3f, 8.5f + mag * 0.4f,
                         Color.FromArgb(120, 200, 200, 206));
                 }
 
                 if (app.Running)
                 {
-                    float pillW = app.IsActive ? 14.0f : 6.0f;
+                    float pillW = app.IsActive ? 16.0f : 6.0f;
                     Color indCol = app.IsActive ? theme.Accent : Color.FromArgb(200, 195, 198, 204);
-                    _renderer.FillRoundedRect(new RectangleF(slot.X + (slot.Width - pillW) * 0.5f, slot.Y + 32.5f, pillW, 2.5f), 1.25f, indCol);
+                    _renderer.FillRoundedRect(new RectangleF(slot.X + (slot.Width - pillW) * 0.5f, slot.Bottom - 3.0f, pillW, 2.8f), 1.4f, indCol);
                 }
 
                 if (app.UnreadCount > 0)
                 {
                     string badge = app.UnreadCount > 9 ? "9+" : app.UnreadCount.ToString();
-                    var bRect = new RectangleF(slot.Right - 13, slot.Top, 13, 13);
-                    _renderer.FillRoundedRect(bRect, 6.5f, Color.FromArgb(255, 255, 69, 58));
-                    _renderer.DrawTextStr(badge, bRect, 7.5f, true, Color.White, mono: true, hAlign: StringAlignment.Center);
+                    var bRect = new RectangleF(slot.Right - 14, slot.Top + 1, 14, 14);
+                    _renderer.FillRoundedRect(bRect, 7.0f, Color.FromArgb(255, 255, 69, 58));
+                    _renderer.DrawTextStr(badge, bRect, 7.8f, true, Color.White, mono: true, hAlign: StringAlignment.Center);
                 }
 
                 TaskbarApp captured = app;
                 _hoverZones.Add((slot, string.IsNullOrWhiteSpace(app.Label) ? "App" : app.Label, app));
                 _renderer.AddHitRegion($"tb-p-{i}", slot, () => TaskbarApps.Activate(captured));
-                cursor += 38;
+                cursor += 46;
             }
 
-            // Inline mini music widget (album art + play/pause glyph, matching notchpixel.com Taskbar)
+            // Inline mini music widget (album art + play/pause glyph)
             if (_state.Media.HasSession)
             {
-                var artRect = new RectangleF(cursor + 2, cy - 11, 22, 22);
+                var artRect = new RectangleF(cursor + 2, cy - 14, 28, 28);
                 if (_state.Media.AlbumArt != null)
                 {
-                    using var artClip = _renderer.CreateIslandOrNotchPath(artRect.X, artRect.Y, artRect.Width, artRect.Height, 6, 0, EdgePlacement.TopCenter);
+                    using var artClip = _renderer.CreateIslandOrNotchPath(artRect.X, artRect.Y, artRect.Width, artRect.Height, 7, 0, EdgePlacement.TopCenter);
                     Region prevArt = g.Clip;
                     g.SetClip(artClip, CombineMode.Intersect);
                     g.InterpolationMode = InterpolationMode.HighQualityBicubic;
@@ -916,11 +934,11 @@ namespace OpenPixel.UI
                 }
                 else
                 {
-                    _renderer.FillRoundedRect(artRect, 6, _state.Media.DominantColor);
+                    _renderer.FillRoundedRect(artRect, 7, _state.Media.DominantColor);
                 }
-                var ppBtn = new RectangleF(cursor + 26, cy - 11, 20, 22);
-                _renderer.DrawLucideIcon(_state.Media.IsPlaying ? "pause" : "play", ppBtn.X + 10, cy, 11.5f, theme.TextPrimary);
-                var mediaZone = new RectangleF(cursor, cy - 14, 46, 28);
+                var ppBtn = new RectangleF(cursor + 34, cy - 12, 22, 24);
+                _renderer.DrawLucideIcon(_state.Media.IsPlaying ? "pause" : "play", ppBtn.X + 11, cy, 13.0f, theme.TextPrimary);
+                var mediaZone = new RectangleF(cursor, cy - 16, 56, 32);
                 string songLabel = string.IsNullOrWhiteSpace(_state.Media.Artist)
                     ? _state.Media.Title
                     : $"{_state.Media.Title} \u2013 {_state.Media.Artist}";
@@ -930,13 +948,13 @@ namespace OpenPixel.UI
                     WindowsSystemHooks.MediaTogglePlayPause(_state);
                     RenderNow();
                 });
-                cursor += 48;
+                cursor += 60;
             }
 
             // Divider
-            cursor += 6;
-            _renderer.DrawLine(cursor, cy - 10, cursor, cy + 10, Color.FromArgb(34, 255, 255, 255), 1.0f);
-            cursor += 1 + 6;
+            cursor += 8;
+            _renderer.DrawLine(cursor, cy - 12, cursor, cy + 12, Color.FromArgb(34, 255, 255, 255), 1.0f);
+            cursor += 1 + 8;
 
             // Real notification-area icons + overflow chevron
             for (int i = 0; i < trayCount; ++i)
@@ -944,80 +962,81 @@ namespace OpenPixel.UI
                 try
                 {
                     g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    g.DrawImage(tray[i], cursor + 1, cy - 10, 20, 20);
+                    g.DrawImage(tray[i], cursor + 2, cy - 11, 22, 22);
                 }
                 catch { }
-                cursor += 22;
+                cursor += 26;
             }
 
-            var chevron = new RectangleF(cursor, cy - 11, 18, 22);
+            var chevron = new RectangleF(cursor, cy - 12, 20, 24);
             _hoverZones.Add((chevron, _trayExpanded ? "Hide extra tray icons" : "Show hidden icons", null));
-            _renderer.DrawTextStr(_trayExpanded ? "\u203A" : "\u2039", chevron, 14.0f, true, theme.TextMuted, hAlign: StringAlignment.Center);
+            _renderer.DrawTextStr(_trayExpanded ? "\u203A" : "\u2039", chevron, 15.0f, true, theme.TextMuted, hAlign: StringAlignment.Center);
             _renderer.AddHitRegion("tb-overflow", chevron, ToggleTrayOverflow);
-            cursor += 22;
+            cursor += 24;
 
             // Status cluster: Wi-Fi / Ethernet, volume, battery -> Native Windows Quick Settings (Win+A)
             RefreshNetworkState();
-            var quickCluster = new RectangleF(cursor, cy - 13, 68, 26);
+            var quickCluster = new RectangleF(cursor, cy - 15, 74, 30);
             _hoverZones.Add((quickCluster, "Quick Settings (Wi-Fi, Volume, Battery)", null));
             float qsHover = Animate("tb-qs", _renderer.IsHovered(quickCluster, _mouseX, _mouseY) ? 1.0f : 0.0f);
-            if (qsHover > 0.01f) _renderer.FillRoundedRect(quickCluster, 8, Color.FromArgb((int)(24 * qsHover), 255, 255, 255));
+            if (qsHover > 0.01f) _renderer.FillRoundedRect(quickCluster, 9, Color.FromArgb((int)(24 * qsHover), 255, 255, 255));
 
-            var wifi = new RectangleF(cursor + 2, cy - 9, 18, 18);
+            var wifi = new RectangleF(cursor + 2, cy - 10, 20, 20);
             DrawNetworkIcon(wifi, theme.TextPrimary);
             _renderer.AddHitRegion("tb-network", wifi, OpenQuickSettings);
-            cursor += 22;
+            cursor += 24;
 
-            var volume = new RectangleF(cursor + 2, cy - 9, 18, 18);
+            var volume = new RectangleF(cursor + 2, cy - 10, 20, 20);
             DrawVolumeIcon(volume, theme.TextPrimary, _state.MasterOutputMuted ? 0 : _state.MasterVolume);
             _renderer.AddHitRegion("tb-volume", volume, OpenQuickSettings);
-            cursor += 22;
+            cursor += 24;
 
             if (_state.Telemetry.HasBattery)
             {
-                var battery = new RectangleF(cursor + 2, cy - 7, 20, 14);
+                var battery = new RectangleF(cursor + 2, cy - 8, 22, 16);
                 DrawBatteryIcon(battery, theme.TextPrimary, _state.Telemetry.BatteryPercent,
                     System.Windows.Forms.SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Online);
                 _renderer.AddHitRegion("tb-battery", battery, OpenQuickSettings);
             }
-            cursor += 24;
+            cursor += 26;
 
             // Clock: two stacked lines -> click opens Native Notification Center & Calendar (Win+N)
-            cursor += 8;
+            cursor += 10;
             DateTime now = DateTime.Now;
-            var clockZone = new RectangleF(cursor, cy - 16, 86, 32);
+            var clockZone = new RectangleF(cursor, cy - 18, 94, 36);
             _hoverZones.Add((clockZone, now.ToString("dddd, MMMM d, yyyy"), null));
             float clkHover = Animate("tb-clock", _renderer.IsHovered(clockZone, _mouseX, _mouseY) ? 1.0f : 0.0f);
-            if (clkHover > 0.01f) _renderer.FillRoundedRect(clockZone, 8, Color.FromArgb((int)(22 * clkHover), 255, 255, 255));
+            if (clkHover > 0.01f) _renderer.FillRoundedRect(clockZone, 9, Color.FromArgb((int)(22 * clkHover), 255, 255, 255));
             string timeText = _state.Settings.Use24HourClock ? now.ToString("HH:mm") : now.ToString("h:mm tt");
-            _renderer.DrawTextStr(timeText, new RectangleF(cursor, cy - 15, 86, 16), 10.5f, true, theme.TextPrimary, mono: false, hAlign: StringAlignment.Far);
-            _renderer.DrawTextStr(now.ToString("M/d/yyyy"), new RectangleF(cursor, cy + 1, 86, 14), 8.5f, false, theme.TextMuted, mono: false, hAlign: StringAlignment.Far);
+            _renderer.DrawTextStr(timeText, new RectangleF(cursor, cy - 17, 94, 18), 11.5f, true, theme.TextPrimary, mono: false, hAlign: StringAlignment.Far);
+            _renderer.DrawTextStr(now.ToString("M/d/yyyy"), new RectangleF(cursor, cy + 2, 94, 15), 9.2f, false, theme.TextMuted, mono: false, hAlign: StringAlignment.Far);
             _renderer.AddHitRegion("tb-clock", clockZone, OpenNotificationCenter);
-            cursor += 86;
+            cursor += 94;
 
             cursor += 8;
-            _renderer.DrawLine(cursor, cy - 10, cursor, cy + 10, Color.FromArgb(34, 255, 255, 255), 1.0f);
-            cursor += 1 + 6;
+            _renderer.DrawLine(cursor, cy - 12, cursor, cy + 12, Color.FromArgb(34, 255, 255, 255), 1.0f);
+            cursor += 1 + 8;
 
-            var bell = new RectangleF(cursor, cy - 13, 26, 26);
+            var bell = new RectangleF(cursor, cy - 16, 32, 32);
             _hoverZones.Add((bell, "Notifications & Calendar", null));
             float bellHover = Animate("tb-bell", _renderer.IsHovered(bell, _mouseX, _mouseY) ? 1.0f : 0.0f);
-            if (bellHover > 0.01f) _renderer.FillRoundedRect(bell, 8, Color.FromArgb((int)(30 * bellHover), 255, 255, 255));
-            _renderer.DrawLucideIcon("bell", bell.X + 13, cy, 14, theme.TextPrimary);
+            if (bellHover > 0.01f) _renderer.FillRoundedRect(bell, 9, Color.FromArgb((int)(30 * bellHover), 255, 255, 255));
+            _renderer.DrawLucideIcon("bell", bell.X + 16, cy, 16, theme.TextPrimary);
             if (_state.Notifications.Count > 0)
-                _renderer.FillCircle(bell.Right - 6, bell.Y + 5, 3.2f, Color.FromArgb(255, 255, 69, 58));
+                _renderer.FillCircle(bell.Right - 7, bell.Y + 6, 3.4f, Color.FromArgb(255, 255, 69, 58));
             _renderer.AddHitRegion("tb-bell", bell, OpenNotificationCenter);
-            cursor += 28;
+            cursor += 34;
 
             // Show Desktop edge strip (click or drag-over reveals desktop)
-            var showDesk = new RectangleF(cursor, cy - 14, 10, 28);
+            var showDesk = new RectangleF(cursor, cy - 16, 12, 32);
             _hoverZones.Add((showDesk, "Show desktop", null));
             _dragZones.Add((showDesk, null, true));
-            _renderer.DrawLine(showDesk.X + 4, cy - 8, showDesk.X + 4, cy + 8, Color.FromArgb(46, 255, 255, 255), 1.0f);
+            _renderer.DrawLine(showDesk.X + 5, cy - 9, showDesk.X + 5, cy + 9, Color.FromArgb(46, 255, 255, 255), 1.2f);
             _renderer.AddHitRegion("tb-showdesktop", showDesk, TriggerShowDesktop);
 
             g.Clip = prev;
-            using var pen = new Pen(theme.Edge, 1.0f);
+            Color rimCol = drewGlass ? Color.FromArgb(44, 255, 255, 255) : theme.Edge;
+            using var pen = new Pen(rimCol, 1.0f);
             g.DrawPath(pen, path);
             _renderer.EndLayeredFrame(Handle, Location, 252);
         }
