@@ -41,6 +41,26 @@ namespace OpenPixel.UI
             return form.TryGetAverageColor(out color);
         }
 
+        public static bool IsDesktopWidgetPinned(GlobalAppState state, WidgetType type)
+        {
+            if (_widgets.Exists(w => !w.IsDisposed && w.WidgetType == type)) return true;
+            return state?.Settings?.PinnedWidgets != null && state.Settings.PinnedWidgets.Exists(p => p != null && p.Type == (int)type);
+        }
+
+        public static void ApplyDayClockSettings(GlobalAppState state)
+        {
+            if (state == null) return;
+            int scale = Math.Clamp(state.Settings.DayClockScalePercent, 50, 200);
+            var rec = state.Settings.PinnedWidgets?.Find(p => p != null && p.Type == (int)WidgetType.DayClock);
+            if (rec != null) rec.ScalePercent = scale;
+            var form = _widgets.Find(w => !w.IsDisposed && w.WidgetType == WidgetType.DayClock);
+            if (form != null)
+            {
+                if (form.ScalePercent != scale) form.ApplyScale(scale);
+                form.RenderNow();
+            }
+        }
+
         public static void ToggleDesktopWidget(GlobalAppState state, WidgetType type)
         {
             DesktopWidgetForm existing = _widgets.Find(w => w.WidgetType == type);
@@ -541,9 +561,13 @@ namespace OpenPixel.UI
         private readonly System.Windows.Forms.Timer _visibilityTimer = new() { Interval = 140 };
         private readonly System.Windows.Forms.Timer _dragHoverTimer = new() { Interval = 450 };
         private readonly List<(RectangleF Rect, TaskbarApp App, bool IsShowDesktop)> _dragZones = new();
+        private readonly List<(RectangleF Rect, string Label, TaskbarApp App)> _hoverZones = new();
         private TaskbarApp _dragHoverApp;
         private bool _dragHoverShowDesktop;
         private StartMenuForm _startMenu;
+        private TaskbarHoverPopupForm _hoverPopup;
+        private string _lastHoverKey = "";
+        private bool _trayExpanded;
         private long _lastAnimMs;
         private long _lastPaintMs;
         private bool _paintPending;
@@ -776,7 +800,7 @@ namespace OpenPixel.UI
 
             TaskbarApps.Refresh();
             IReadOnlyList<Bitmap> tray = TrayIcons.Snapshot();
-            int trayCount = Math.Min(tray.Count, 5);
+            int trayCount = _trayExpanded ? Math.Min(tray.Count, 12) : Math.Min(tray.Count, 4);
             Rectangle monitor = TargetMonitor().Bounds;
             int maxFitApps = Math.Max(4, Math.Min(16, (monitor.Width - 360) / 38));
             List<TaskbarApp> dockApps = TaskbarApps.DockItems(maxFitApps);
@@ -791,6 +815,7 @@ namespace OpenPixel.UI
             if (!_renderer.BeginLayeredFrame(Width, Height, 1.0f)) return;
             _renderer.ClearHitRegions();
             _dragZones.Clear();
+            _hoverZones.Clear();
 
             ThemeSpec theme = ThemeSpec.Get(_state.Settings.Theme);
             using GraphicsPath path = _renderer.CreateBottomTaskbarNotchPath(8, 2, Width - 16, Height - 2, 16 * _state.Settings.CornerRadiusScale);
@@ -799,14 +824,18 @@ namespace OpenPixel.UI
             g.SetClip(path, CombineMode.Replace);
 
             bool drewGlass = false;
-            if (!_state.Settings.DrawWithProcessor && theme.IsGlass)
+            if (theme.IsGlass || _state.Settings.Theme == SurfaceTheme.Acrylic)
             {
                 drewGlass = _renderer.RenderLiquidGlassBackdrop(Bounds, 0, 0, Width, Height,
-                    _state.Settings.GlassBlurRadius, _state.Settings.Theme == SurfaceTheme.CandyGlass);
+                    _state.Settings.GlassBlurRadius, _state.Settings.Theme,
+                    16.0f * _state.Settings.CornerRadiusScale * _renderer.DpiScale);
             }
             if (!drewGlass)
             {
-                using var fillBrush = new SolidBrush(theme.IsGlass ? Color.FromArgb(242, 10, 11, 14) : theme.Fill);
+                Color solidFill = _state.Settings.Theme == SurfaceTheme.CandyGlass
+                    ? Color.FromArgb(242, 34, 18, 36)
+                    : (theme.IsGlass ? Color.FromArgb(242, 14, 15, 20) : theme.Fill);
+                using var fillBrush = new SolidBrush(solidFill);
                 g.FillPath(fillBrush, path);
             }
 
@@ -815,6 +844,7 @@ namespace OpenPixel.UI
 
             // Start (crisp white 2x2 grid matching reference screenshot)
             var startBtn = new RectangleF(cursor, cy - 15, 30, 30);
+            _hoverZones.Add((startBtn, "Start", null));
             float startHover = Animate("tb-start", _renderer.IsHovered(startBtn, _mouseX, _mouseY) ? 1.0f : 0.0f);
             if (startHover > 0.01f)
                 _renderer.FillRoundedRect(startBtn, 8, Color.FromArgb((int)(28 * startHover), 255, 255, 255));
@@ -866,6 +896,7 @@ namespace OpenPixel.UI
                 }
 
                 TaskbarApp captured = app;
+                _hoverZones.Add((slot, string.IsNullOrWhiteSpace(app.Label) ? "App" : app.Label, app));
                 _renderer.AddHitRegion($"tb-p-{i}", slot, () => TaskbarApps.Activate(captured));
                 cursor += 38;
             }
@@ -889,7 +920,12 @@ namespace OpenPixel.UI
                 }
                 var ppBtn = new RectangleF(cursor + 26, cy - 11, 20, 22);
                 _renderer.DrawLucideIcon(_state.Media.IsPlaying ? "pause" : "play", ppBtn.X + 10, cy, 11.5f, theme.TextPrimary);
-                _renderer.AddHitRegion("tb-media-toggle", new RectangleF(cursor, cy - 14, 46, 28), () =>
+                var mediaZone = new RectangleF(cursor, cy - 14, 46, 28);
+                string songLabel = string.IsNullOrWhiteSpace(_state.Media.Artist)
+                    ? _state.Media.Title
+                    : $"{_state.Media.Title} \u2013 {_state.Media.Artist}";
+                _hoverZones.Add((mediaZone, string.IsNullOrWhiteSpace(songLabel) ? "Now Playing" : songLabel, null));
+                _renderer.AddHitRegion("tb-media-toggle", mediaZone, () =>
                 {
                     WindowsSystemHooks.MediaTogglePlayPause(_state);
                     RenderNow();
@@ -915,37 +951,48 @@ namespace OpenPixel.UI
             }
 
             var chevron = new RectangleF(cursor, cy - 11, 18, 22);
-            _renderer.DrawTextStr("\u2039", chevron, 14.0f, true, theme.TextMuted, hAlign: StringAlignment.Center);
-            _renderer.AddHitRegion("tb-overflow", chevron, OpenTrayOverflow);
+            _hoverZones.Add((chevron, _trayExpanded ? "Hide extra tray icons" : "Show hidden icons", null));
+            _renderer.DrawTextStr(_trayExpanded ? "\u203A" : "\u2039", chevron, 14.0f, true, theme.TextMuted, hAlign: StringAlignment.Center);
+            _renderer.AddHitRegion("tb-overflow", chevron, ToggleTrayOverflow);
             cursor += 22;
 
-            // Status cluster: Wi-Fi / Ethernet, volume, battery
+            // Status cluster: Wi-Fi / Ethernet, volume, battery -> Native Windows Quick Settings (Win+A)
             RefreshNetworkState();
-            var wifi = new RectangleF(cursor, cy - 9, 18, 18);
+            var quickCluster = new RectangleF(cursor, cy - 13, 68, 26);
+            _hoverZones.Add((quickCluster, "Quick Settings (Wi-Fi, Volume, Battery)", null));
+            float qsHover = Animate("tb-qs", _renderer.IsHovered(quickCluster, _mouseX, _mouseY) ? 1.0f : 0.0f);
+            if (qsHover > 0.01f) _renderer.FillRoundedRect(quickCluster, 8, Color.FromArgb((int)(24 * qsHover), 255, 255, 255));
+
+            var wifi = new RectangleF(cursor + 2, cy - 9, 18, 18);
             DrawNetworkIcon(wifi, theme.TextPrimary);
-            _renderer.AddHitRegion("tb-network", wifi, () => OpenUri("ms-availablenetworks:"));
+            _renderer.AddHitRegion("tb-network", wifi, OpenQuickSettings);
             cursor += 22;
 
-            var volume = new RectangleF(cursor, cy - 9, 18, 18);
+            var volume = new RectangleF(cursor + 2, cy - 9, 18, 18);
             DrawVolumeIcon(volume, theme.TextPrimary, _state.MasterOutputMuted ? 0 : _state.MasterVolume);
-            _renderer.AddHitRegion("tb-volume", volume, () => OpenUri("ms-settings:sound"));
+            _renderer.AddHitRegion("tb-volume", volume, OpenQuickSettings);
             cursor += 22;
 
             if (_state.Telemetry.HasBattery)
             {
-                var battery = new RectangleF(cursor, cy - 7, 20, 14);
+                var battery = new RectangleF(cursor + 2, cy - 7, 20, 14);
                 DrawBatteryIcon(battery, theme.TextPrimary, _state.Telemetry.BatteryPercent,
                     System.Windows.Forms.SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Online);
-                _renderer.AddHitRegion("tb-battery", battery, () => OpenUri("ms-settings:batterysaver"));
+                _renderer.AddHitRegion("tb-battery", battery, OpenQuickSettings);
             }
             cursor += 24;
 
-            // Clock: two stacked lines in smooth Arial matching the top notch.
+            // Clock: two stacked lines -> click opens Native Notification Center & Calendar (Win+N)
             cursor += 8;
             DateTime now = DateTime.Now;
+            var clockZone = new RectangleF(cursor, cy - 16, 86, 32);
+            _hoverZones.Add((clockZone, now.ToString("dddd, MMMM d, yyyy"), null));
+            float clkHover = Animate("tb-clock", _renderer.IsHovered(clockZone, _mouseX, _mouseY) ? 1.0f : 0.0f);
+            if (clkHover > 0.01f) _renderer.FillRoundedRect(clockZone, 8, Color.FromArgb((int)(22 * clkHover), 255, 255, 255));
             string timeText = _state.Settings.Use24HourClock ? now.ToString("HH:mm") : now.ToString("h:mm tt");
             _renderer.DrawTextStr(timeText, new RectangleF(cursor, cy - 15, 86, 16), 10.5f, true, theme.TextPrimary, mono: false, hAlign: StringAlignment.Far);
             _renderer.DrawTextStr(now.ToString("M/d/yyyy"), new RectangleF(cursor, cy + 1, 86, 14), 8.5f, false, theme.TextMuted, mono: false, hAlign: StringAlignment.Far);
+            _renderer.AddHitRegion("tb-clock", clockZone, OpenNotificationCenter);
             cursor += 86;
 
             cursor += 8;
@@ -953,16 +1000,18 @@ namespace OpenPixel.UI
             cursor += 1 + 6;
 
             var bell = new RectangleF(cursor, cy - 13, 26, 26);
+            _hoverZones.Add((bell, "Notifications & Calendar", null));
             float bellHover = Animate("tb-bell", _renderer.IsHovered(bell, _mouseX, _mouseY) ? 1.0f : 0.0f);
             if (bellHover > 0.01f) _renderer.FillRoundedRect(bell, 8, Color.FromArgb((int)(30 * bellHover), 255, 255, 255));
             _renderer.DrawLucideIcon("bell", bell.X + 13, cy, 14, theme.TextPrimary);
             if (_state.Notifications.Count > 0)
                 _renderer.FillCircle(bell.Right - 6, bell.Y + 5, 3.2f, Color.FromArgb(255, 255, 69, 58));
-            _renderer.AddHitRegion("tb-bell", bell, OpenActionCenter);
+            _renderer.AddHitRegion("tb-bell", bell, OpenNotificationCenter);
             cursor += 28;
 
             // Show Desktop edge strip (click or drag-over reveals desktop)
             var showDesk = new RectangleF(cursor, cy - 14, 10, 28);
+            _hoverZones.Add((showDesk, "Show desktop", null));
             _dragZones.Add((showDesk, null, true));
             _renderer.DrawLine(showDesk.X + 4, cy - 8, showDesk.X + 4, cy + 8, Color.FromArgb(46, 255, 255, 255), 1.0f);
             _renderer.AddHitRegion("tb-showdesktop", showDesk, TriggerShowDesktop);
@@ -975,41 +1024,62 @@ namespace OpenPixel.UI
 
         private void OpenStartMenu()
         {
+            // Trigger the real native Windows Start Menu via VK_LWIN.
             try
             {
-                _startMenu?.Close();
-                _startMenu = new StartMenuForm(_state);
-                Rectangle monitor = TargetMonitor().Bounds;
-                _startMenu.ShowAt(new Point(monitor.Left + (monitor.Width - 600) / 2, monitor.Bottom - BarHeight - BottomMargin - 344));
+                Win32Layered.keybd_event(0x5B, 0, 0, UIntPtr.Zero); // VK_LWIN down
+                Win32Layered.keybd_event(0x5B, 0, 2, UIntPtr.Zero); // VK_LWIN up
             }
             catch { }
         }
 
-        private void OpenTrayOverflow()
+        private void ToggleTrayOverflow()
         {
-            try
+            _trayExpanded = !_trayExpanded;
+            RenderNow();
+            if (_trayExpanded)
             {
-                IntPtr overflow = Win32Layered.FindWindowW("NotifyIconOverflowWindow", null);
-                if (overflow == IntPtr.Zero) return;
-                Rectangle monitor = TargetMonitor().Bounds;
-                Win32Layered.SetWindowPos(overflow, new IntPtr(-1), monitor.Right - 340,
-                    monitor.Bottom - BarHeight - BottomMargin - 260, 0, 0, 0x0001 | 0x0002); // NOSIZE|NOMOVE
-                Win32Layered.ShowWindow(overflow, 4); // SW_SHOWNOACTIVATE
-                SetForegroundWindow(overflow);
+                try
+                {
+                    IntPtr overflow = Win32Layered.FindWindowW("NotifyIconOverflowWindow", null);
+                    if (overflow != IntPtr.Zero)
+                    {
+                        Rectangle monitor = TargetMonitor().Bounds;
+                        Win32Layered.SetWindowPos(overflow, new IntPtr(-1), monitor.Right - 340,
+                            monitor.Bottom - BarHeight - BottomMargin - 260, 0, 0, 0x0001 | 0x0002);
+                        Win32Layered.ShowWindow(overflow, 4);
+                        SetForegroundWindow(overflow);
+                    }
+                }
+                catch { }
             }
-            catch { }
         }
 
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
-        private static void OpenActionCenter()
+        private static void OpenQuickSettings()
         {
+            // Native Windows 11 Quick Settings flyout (Wi-Fi, Bluetooth, Volume, Brightness, Battery)
             try
             {
-                Win32Layered.keybd_event(0x5B, 0, 0, UIntPtr.Zero);      // LWIN down
-                Win32Layered.keybd_event(0x41, 0, 0, UIntPtr.Zero);      // A down
-                Win32Layered.keybd_event(0x41, 0, 2, UIntPtr.Zero);      // A up
-                Win32Layered.keybd_event(0x5B, 0, 2, UIntPtr.Zero);      // LWIN up
+                Win32Layered.keybd_event(0x5B, 0, 0, UIntPtr.Zero); // LWIN down
+                Win32Layered.keybd_event(0x41, 0, 0, UIntPtr.Zero); // A down
+                Win32Layered.keybd_event(0x41, 0, 2, UIntPtr.Zero); // A up
+                Win32Layered.keybd_event(0x5B, 0, 2, UIntPtr.Zero); // LWIN up
+            }
+            catch { }
+        }
+
+        private static void OpenNotificationCenter()
+        {
+            // Native Windows 11 Notification Center & Calendar (Win + N)
+            try
+            {
+                Win32Layered.keybd_event(0x5B, 0, 0, UIntPtr.Zero); // LWIN down
+                Win32Layered.keybd_event(0x4E, 0, 0, UIntPtr.Zero); // N down
+                Win32Layered.keybd_event(0x4E, 0, 2, UIntPtr.Zero); // N up
+                Win32Layered.keybd_event(0x5B, 0, 2, UIntPtr.Zero); // LWIN up
             }
             catch { }
         }
@@ -1109,6 +1179,7 @@ namespace OpenPixel.UI
             _mouseX = e.X;
             _mouseY = e.Y;
             _paintPending = true;
+            UpdateHoverPopup(e.X, e.Y);
         }
 
         protected override void OnMouseLeave(EventArgs e)
@@ -1117,6 +1188,38 @@ namespace OpenPixel.UI
             _mouseX = -1000;
             _mouseY = -1000;
             _paintPending = true;
+            ScheduleHideHoverPopup();
+        }
+
+        private void UpdateHoverPopup(float mx, float my)
+        {
+            foreach (var z in _hoverZones)
+            {
+                if (!z.Rect.Contains(mx, my)) continue;
+                string key = z.App != null
+                    ? $"app:{z.App.Label}:{z.App.Window}"
+                    : $"lbl:{z.Label}";
+                if (key == _lastHoverKey && _hoverPopup != null && _hoverPopup.Visible) return;
+                _lastHoverKey = key;
+
+                _hoverPopup ??= new TaskbarHoverPopupForm(_state);
+                int anchorScreenX = Left + (int)(z.Rect.X + z.Rect.Width * 0.5f);
+                int anchorScreenTop = Top - 6;
+                bool showLivePreview = _state.Settings.TaskbarLiveHoverPreviews &&
+                                       z.App != null && z.App.Running && z.App.Window != IntPtr.Zero;
+                _hoverPopup.ShowFor(z.Label, showLivePreview ? z.App : null, anchorScreenX, anchorScreenTop);
+                return;
+            }
+            ScheduleHideHoverPopup();
+        }
+
+        private void ScheduleHideHoverPopup()
+        {
+            _lastHoverKey = "";
+            if (_hoverPopup != null && _hoverPopup.Visible && !_hoverPopup.Bounds.Contains(Cursor.Position))
+            {
+                _hoverPopup.Hide();
+            }
         }
 
         private static void TriggerShowDesktop()
@@ -1183,8 +1286,120 @@ namespace OpenPixel.UI
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            if (_hoverPopup != null && _hoverPopup.Visible) _hoverPopup.Hide();
+
+            if (e.Button == MouseButtons.Right)
+            {
+                ShowContextMenuAt(e.X, e.Y);
+                return;
+            }
             _renderer.DispatchClick(e.X, e.Y);
             RenderNow();
+        }
+
+        private void ShowContextMenuAt(int x, int y)
+        {
+            TaskbarApp hitApp = null;
+            foreach (var z in _hoverZones)
+            {
+                if (z.App != null && z.Rect.Contains(x, y))
+                {
+                    hitApp = z.App;
+                    break;
+                }
+            }
+
+            var menu = new ContextMenuStrip
+            {
+                ShowImageMargin = false,
+                BackColor = Color.FromArgb(255, 20, 20, 22),
+                ForeColor = Color.FromArgb(255, 240, 240, 244),
+                Font = UiFonts.Get(9.5f, false),
+                Renderer = new DarkTaskbarMenuRenderer()
+            };
+
+            if (hitApp != null)
+            {
+                string title = string.IsNullOrWhiteSpace(hitApp.Label) ? "Application" : hitApp.Label;
+                var hdr = new ToolStripMenuItem(title)
+                {
+                    Enabled = false,
+                    Font = UiFonts.Get(9.5f, true)
+                };
+                menu.Items.Add(hdr);
+                menu.Items.Add(new ToolStripSeparator());
+
+                var openItem = new ToolStripMenuItem(hitApp.Running ? "Bring to front" : "Open");
+                openItem.Click += (_, _) => TaskbarApps.Activate(hitApp);
+                menu.Items.Add(openItem);
+
+                if (!string.IsNullOrWhiteSpace(hitApp.LaunchPath))
+                {
+                    var newWin = new ToolStripMenuItem("New window");
+                    newWin.Click += (_, _) =>
+                    {
+                        try { Process.Start(new ProcessStartInfo(hitApp.LaunchPath) { UseShellExecute = true }); } catch { }
+                    };
+                    menu.Items.Add(newWin);
+                }
+
+                if (hitApp.Running && hitApp.Window != IntPtr.Zero)
+                {
+                    menu.Items.Add(new ToolStripSeparator());
+                    var closeItem = new ToolStripMenuItem("Close window");
+                    closeItem.Click += (_, _) =>
+                    {
+                        try { PostMessageW(hitApp.Window, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero); } catch { }
+                    };
+                    menu.Items.Add(closeItem);
+
+                    var endTask = new ToolStripMenuItem("End task");
+                    endTask.ForeColor = Color.FromArgb(255, 255, 96, 92);
+                    endTask.Click += (_, _) =>
+                    {
+                        try
+                        {
+                            Win32Layered.GetWindowThreadProcessId(hitApp.Window, out uint pid);
+                            if (pid > 0 && pid != (uint)Environment.ProcessId)
+                            {
+                                using var p = Process.GetProcessById((int)pid);
+                                p.Kill(entireProcessTree: true);
+                            }
+                        }
+                        catch { }
+                    };
+                    menu.Items.Add(endTask);
+                }
+            }
+            else
+            {
+                var tbSettings = new ToolStripMenuItem("Taskbar settings");
+                tbSettings.Click += (_, _) =>
+                {
+                    _state.ActiveSettingsCat = SettingsCategory.Taskbar;
+                    try { Process.Start(new ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true }); } catch { }
+                };
+                menu.Items.Add(tbSettings);
+
+                var taskMgr = new ToolStripMenuItem("Task Manager");
+                taskMgr.Click += (_, _) =>
+                {
+                    try { Process.Start(new ProcessStartInfo("taskmgr.exe") { UseShellExecute = true }); } catch { }
+                };
+                menu.Items.Add(taskMgr);
+
+                var quickSettings = new ToolStripMenuItem("Quick Settings");
+                quickSettings.Click += (_, _) => OpenQuickSettings();
+                menu.Items.Add(quickSettings);
+
+                menu.Items.Add(new ToolStripSeparator());
+                var showDesk = new ToolStripMenuItem("Show desktop");
+                showDesk.Click += (_, _) => TriggerShowDesktop();
+                menu.Items.Add(showDesk);
+            }
+
+            menu.Closed += (_, _) => BeginInvoke(new Action(() => menu.Dispose()));
+            menu.Show(this, new Point(x, Math.Max(0, y - 4)), ToolStripDropDownDirection.AboveRight);
         }
 
         protected override void Dispose(bool disposing)
@@ -1194,7 +1409,208 @@ namespace OpenPixel.UI
                 _animTimer.Dispose();
                 _visibilityTimer.Dispose();
                 _dragHoverTimer.Dispose();
+                _hoverPopup?.Dispose();
                 _startMenu?.Dispose();
+                _renderer.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+    }
+
+    internal sealed class DarkTaskbarMenuRenderer : ToolStripProfessionalRenderer
+    {
+        public DarkTaskbarMenuRenderer() : base(new DarkColorTable()) { }
+
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+        {
+            var r = new Rectangle(4, 1, e.Item.Width - 8, e.Item.Height - 2);
+            if (e.Item.Selected && e.Item.Enabled)
+            {
+                using var br = new SolidBrush(Color.FromArgb(255, 42, 42, 46));
+                e.Graphics.FillRectangle(br, r);
+            }
+        }
+
+        private sealed class DarkColorTable : ProfessionalColorTable
+        {
+            public override Color ToolStripDropDownBackground => Color.FromArgb(255, 20, 20, 22);
+            public override Color MenuBorder => Color.FromArgb(255, 48, 48, 54);
+            public override Color SeparatorDark => Color.FromArgb(255, 44, 44, 48);
+            public override Color SeparatorLight => Color.FromArgb(255, 44, 44, 48);
+        }
+    }
+
+    // ========================================================================
+    // Floating Taskbar Tooltip & Live Window Preview Card (hover above icon)
+    // ========================================================================
+    public sealed class TaskbarHoverPopupForm : Form
+    {
+        private readonly GlobalAppState _state;
+        private readonly LiquidGlassRenderer _renderer = new();
+        private string _label = "";
+        private TaskbarApp _app;
+        private Bitmap _previewThumb;
+        private RectangleF _closeRect;
+
+        [DllImport("user32.dll")]
+        private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        public TaskbarHoverPopupForm(GlobalAppState state)
+        {
+            _state = state;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x00080000 | 0x00000080 | 0x08000000; // LAYERED | TOOLWINDOW | NOACTIVATE
+                return cp;
+            }
+        }
+
+        protected override bool ShowWithoutActivation => true;
+
+        public void ShowFor(string label, TaskbarApp previewApp, int anchorCenterX, int anchorBottomY)
+        {
+            _label = label ?? "";
+            _app = previewApp;
+            _previewThumb?.Dispose();
+            _previewThumb = null;
+
+            int w, h;
+            if (_app != null && _app.Window != IntPtr.Zero)
+            {
+                _previewThumb = CaptureWindowThumb(_app.Window, 204, 114);
+                w = 220;
+                h = 148;
+            }
+            else
+            {
+                int textW = Math.Clamp(_label.Length * 7 + 26, 64, 280);
+                w = textW;
+                h = 30;
+            }
+
+            Rectangle mon = Screen.FromPoint(new Point(anchorCenterX, anchorBottomY)).Bounds;
+            int x = Math.Clamp(anchorCenterX - w / 2, mon.Left + 8, mon.Right - w - 8);
+            int y = Math.Max(mon.Top + 8, anchorBottomY - h);
+            Bounds = new Rectangle(x, y, w, h);
+            if (!Visible) Show();
+            RenderNow();
+        }
+
+        private static Bitmap CaptureWindowThumb(IntPtr hwnd, int dstW, int dstH)
+        {
+            try
+            {
+                if (!Win32Layered.GetWindowRect(hwnd, out Win32Layered.RECT wr)) return null;
+                int sw = wr.right - wr.left;
+                int sh = wr.bottom - wr.top;
+                if (sw < 40 || sh < 40 || sw > 4096 || sh > 4096) return null;
+
+                using var full = new Bitmap(sw, sh, PixelFormat.Format32bppPArgb);
+                using (var g = Graphics.FromImage(full))
+                {
+                    IntPtr hdc = g.GetHdc();
+                    bool ok = PrintWindow(hwnd, hdc, 2 /* PW_RENDERFULLCONTENT */);
+                    g.ReleaseHdc(hdc);
+                    if (!ok) return null;
+                }
+                var thumb = new Bitmap(dstW, dstH, PixelFormat.Format32bppPArgb);
+                using (var g = Graphics.FromImage(thumb))
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                    g.DrawImage(full, 0, 0, dstW, dstH);
+                }
+                return thumb;
+            }
+            catch { return null; }
+        }
+
+        private void RenderNow()
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            if (!_renderer.BeginLayeredFrame(Width, Height, 1.0f)) return;
+            var box = new RectangleF(1, 1, Width - 2, Height - 2);
+            float r = _app != null ? 12.0f : 10.0f;
+            _renderer.FillRoundedRect(box, r, Color.FromArgb(242, 16, 16, 18));
+            _renderer.DrawRoundedRect(box, r, Color.FromArgb(56, 255, 255, 255), 1.0f);
+
+            if (_app != null)
+            {
+                Bitmap appIcon = AppIcons.ForPinnedShortcut(_app.LaunchPath, _app.Window);
+                float titleX = 10.0f;
+                if (appIcon != null)
+                {
+                    _renderer.G.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    _renderer.G.DrawImage(appIcon, 10, 7, 15, 15);
+                    titleX = 30.0f;
+                }
+                _renderer.DrawTextStr(_label, new RectangleF(titleX, 6, Width - titleX - 28, 18), 9.2f, true, Color.FromArgb(255, 242, 242, 246));
+                _closeRect = new RectangleF(Width - 24, 5, 18, 18);
+                _renderer.FillRoundedRect(_closeRect, 5, Color.FromArgb(32, 255, 255, 255));
+                _renderer.DrawTextStr("\u00D7", _closeRect, 11.0f, true, Color.FromArgb(255, 200, 200, 208), hAlign: StringAlignment.Center);
+
+                var thumbRect = new RectangleF(8, 29, Width - 16, Height - 37);
+                using var thumbClip = _renderer.CreateIslandOrNotchPath(thumbRect.X, thumbRect.Y, thumbRect.Width, thumbRect.Height, 8, 0, EdgePlacement.TopCenter);
+                Region prevT = _renderer.G.Clip;
+                _renderer.G.SetClip(thumbClip, CombineMode.Replace);
+                if (_previewThumb != null)
+                {
+                    _renderer.G.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    _renderer.G.DrawImage(_previewThumb, thumbRect);
+                }
+                else
+                {
+                    _renderer.FillRoundedRect(thumbRect, 8, Color.FromArgb(255, 26, 26, 30));
+                    _renderer.DrawTextStr("Click to bring forward", thumbRect, 8.5f, false, Color.FromArgb(255, 140, 140, 148), hAlign: StringAlignment.Center);
+                }
+                _renderer.G.Clip = prevT;
+                _renderer.DrawRoundedRect(thumbRect, 8, Color.FromArgb(38, 255, 255, 255), 1.0f);
+            }
+            else
+            {
+                _closeRect = RectangleF.Empty;
+                _renderer.DrawTextStr(_label, new RectangleF(8, 5, Width - 16, Height - 10), 9.0f, false, Color.FromArgb(255, 242, 242, 246), hAlign: StringAlignment.Center);
+            }
+
+            _renderer.EndLayeredFrame(Handle, Location, 255);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (_app == null) { Hide(); return; }
+            if (!_closeRect.IsEmpty && _closeRect.Contains(e.X, e.Y))
+            {
+                try { PostMessageW(_app.Window, 0x0010, IntPtr.Zero, IntPtr.Zero); } catch { }
+                Hide();
+                return;
+            }
+            TaskbarApps.Activate(_app);
+            Hide();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            Hide();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _previewThumb?.Dispose();
                 _renderer.Dispose();
             }
             base.Dispose(disposing);

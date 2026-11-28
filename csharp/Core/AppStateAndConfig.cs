@@ -32,8 +32,13 @@ namespace OpenPixel.Core
         public List<WidgetPinRecord> PinnedWidgets { get; set; } = new();
 
         // 1. General
-        public bool LaunchAtStartup { get; set; } = false;
-        public string Language { get; set; } = "en";
+        public bool HasCompletedOnboarding { get; set; } = false;
+        public bool LaunchAtStartup { get; set; } = true;
+        public string Language { get; set; } = "system";
+        public bool SlimStripUnderMaximized { get; set; } = true;
+        public bool NotificationsInIsland { get; set; } = true;
+        public bool VolumeInIsland { get; set; } = true;
+        public bool ClipboardHistoryEnabled { get; set; } = true;
         public bool DrawWithProcessor { get; set; } = false;
         public bool ReverseScrolling { get; set; } = false;
         public bool PauseEffectsOnBattery { get; set; } = true;
@@ -73,7 +78,7 @@ namespace OpenPixel.Core
         {
             PanelId.Music, PanelId.Web, PanelId.Notifications, PanelId.Chat,
             PanelId.Shelf, PanelId.Clipboard, PanelId.Widgets, PanelId.Controls,
-            PanelId.Launcher, PanelId.Calls
+            PanelId.Launcher, PanelId.PhoneDeck, PanelId.Calls
         };
         public bool ClockTimestampsInNotifications { get; set; } = true;
         public int MusicFilterMode { get; set; } = 0;
@@ -89,7 +94,9 @@ namespace OpenPixel.Core
         public string WorldClockCity { get; set; } = "Tokyo";
         public int WorldClockOffsetHours { get; set; } = 9;
         public bool LockDesktopWidgets { get; set; } = false;
-        public int DayClockAccentColorArgb { get; set; } = Color.FromArgb(255, 232, 138, 42).ToArgb();
+        public int DayClockScalePercent { get; set; } = 100;
+        public int DayClockAccentColorArgb { get; set; } = Color.White.ToArgb();
+        public List<string> IslandWidgets { get; set; } = new() { "calendar", "focus", "weather", "stats" };
         public bool DayClockShowWeekday { get; set; } = true;
         public bool DayClockShowDate { get; set; } = true;
         public bool DayClockShowTime { get; set; } = true;
@@ -123,8 +130,8 @@ namespace OpenPixel.Core
         public bool ShowObsRecPill { get; set; } = true;
 
         // 8. Gaming (DISABLEABLE GAME OVERLAY: Master Toggle + Off/SlimStrip/Normal)
-        public bool GameOverlayMasterEnabled { get; set; } = true;
-        public GameOverlayMode GameOverlayMode { get; set; } = GameOverlayMode.SlimStrip;
+        public bool GameOverlayMasterEnabled { get; set; } = false;
+        public GameOverlayMode GameOverlayMode { get; set; } = GameOverlayMode.OffHideCompletely;
         public bool GameStripShowFps { get; set; } = true;
         public bool GameStripShowCpu { get; set; } = true;
         public bool GameStripShowGpu { get; set; } = true;
@@ -143,9 +150,11 @@ namespace OpenPixel.Core
         public float DeckScrollSpeed { get; set; } = 1.0f;
         public bool BottomTaskbarEnabled { get; set; } = false;
         public bool TaskbarMultiMonitor { get; set; } = false;
+        public bool TaskbarPerScreenApps { get; set; } = true;
         public bool TaskbarAutoHideMaximized { get; set; } = false; // OFF by default: always show
         public bool TaskbarDockMagnification { get; set; } = true;
         public bool TaskbarLiveHoverPreviews { get; set; } = true;
+        public bool TaskbarWinNumberHotkeys { get; set; } = true;
         public bool LiveVideoWallpaperEnabled { get; set; } = false;
         public string LiveVideoWallpaperPath { get; set; } = "";
         public float WallpaperHue { get; set; } = 0.0f;
@@ -335,6 +344,9 @@ namespace OpenPixel.Core
         public bool IsRecordingScreen = false;
         public long RecordingStartMs = 0;
         public bool IsFullscreenGameActive = false;
+        public bool IsForegroundMaximized = false;
+        public int ClipboardScrollOffset = 0;
+        public bool SendToPhoneIncludeClipboard = true;
         public bool IsGameCursorShowing = true; // False when mouse is locked/hidden for aiming in a game!
         public string ActiveFullscreenApp = "";
 
@@ -384,6 +396,7 @@ namespace OpenPixel.Core
         public readonly Spring FadeSpring = new(0.0f);
         public readonly Spring PanelSpring = new(100.0f);
         public readonly Spring NotchSpring = new(100.0f);
+        public readonly Spring SlimIdleSpring = new(0.0f);
         public readonly Spring RecSpring = new(0.0f);
         public readonly Spring FlipSpring = new(100.0f);
         public readonly Spring PlaySpring = new(0.0f);
@@ -449,7 +462,11 @@ namespace OpenPixel.Core
 
         // Focus Timer
         public bool FocusTimerRunning = false;
+        public string FocusTimerLabel = "focus";
+        public int FocusTimerTotalMin = 25;
+        public int FocusTimerBreakMin = 5;
         public int FocusTimerRemainingSec = 25 * 60;
+        public bool ShowRemindersInWidgets = false;
 
         // OBS & Drawers
         public bool ObsRecordingActive = false;
@@ -669,6 +686,12 @@ namespace OpenPixel.Core
                                 }
 
                                 state.Settings = loaded;
+                                if (loaded.PanelOrder != null && !loaded.PanelOrder.Contains(PanelId.PhoneDeck))
+                                {
+                                    int callIdx = loaded.PanelOrder.IndexOf(PanelId.Calls);
+                                    if (callIdx >= 0) loaded.PanelOrder.Insert(callIdx, PanelId.PhoneDeck);
+                                    else loaded.PanelOrder.Add(PanelId.PhoneDeck);
+                                }
                                 state.SnapThemeBlend(loaded.Theme);
                                 state.NotchSpring.Snap(loaded.Shape == IslandShape.Notch ? 100.0f : 0.0f);
                                 SyncSettingsToLauncherSlots(state);

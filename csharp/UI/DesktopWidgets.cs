@@ -84,15 +84,15 @@ namespace OpenPixel.UI
 
         private static int BaseWidth(WidgetType t) => t switch
         {
-            WidgetType.DayClock => 520,
+            WidgetType.DayClock => 560,
             WidgetType.AnalogClock => 200,
-            WidgetType.Calendar => 276,
+            WidgetType.Calendar => 282,
             WidgetType.TodoList => 248,
             WidgetType.Photos => 264,
-            WidgetType.PcStats => 288,
+            WidgetType.PcStats => 282,
             WidgetType.StockPrices => 250,
             WidgetType.Batteries => 244,
-            WidgetType.FocusTimer => 214,
+            WidgetType.FocusTimer => 282,
             WidgetType.CustomTile => 228,
             WidgetType.Clock => 214,
             WidgetType.WorldClock => 224,
@@ -101,15 +101,15 @@ namespace OpenPixel.UI
 
         private static int BaseHeight(WidgetType t) => t switch
         {
-            WidgetType.DayClock => 310,
+            WidgetType.DayClock => 240,
             WidgetType.AnalogClock => 200,
-            WidgetType.Calendar => 222,
+            WidgetType.Calendar => 113,
             WidgetType.TodoList => 178,
             WidgetType.Photos => 178,
-            WidgetType.PcStats => 152,
+            WidgetType.PcStats => 148,
             WidgetType.StockPrices => 152,
             WidgetType.Batteries => 148,
-            WidgetType.FocusTimer => 136,
+            WidgetType.FocusTimer => 113,
             WidgetType.CustomTile => 122,
             WidgetType.Clock => 116,
             WidgetType.WorldClock => 122,
@@ -272,37 +272,43 @@ namespace OpenPixel.UI
                 if (!_renderer.BeginLayeredFrame(Width, Height, 1.0f)) return;
                 _renderer.ClearHitRegions();
 
+                ThemeSpec globalTheme = ThemeSpec.Get(_state.Settings.Theme);
                 var box = new RectangleF(2, 2, Width - 4, Height - 4);
                 bool noBackground = StyleMode == 3;
+                bool isLightSurface = StyleMode == 2 || (StyleMode == 0 && globalTheme.IsLight);
+                bool useGlass = StyleMode == 0 && (globalTheme.IsGlass || _state.Settings.Theme == SurfaceTheme.Acrylic);
                 bool drewGlass = false;
                 if (!noBackground)
                 {
                     using GraphicsPath clipPath = RoundedPath(box, 18.0f);
                     Region prevClip = _renderer.G.Clip;
                     _renderer.G.SetClip(clipPath, CombineMode.Replace);
-                    if (StyleMode == 0 && !_state.Settings.DrawWithProcessor)
+                    if (useGlass)
                     {
                         drewGlass = _renderer.RenderLiquidGlassBackdrop(
                             new Rectangle(_screenX, _screenY, Width, Height),
                             2, 2, Width - 4, Height - 4, _state.Settings.GlassBlurRadius,
-                            _state.Settings.Theme == SurfaceTheme.CandyGlass);
+                            _state.Settings.Theme, 18.0f * _renderer.DpiScale);
                     }
                     if (!drewGlass)
                     {
-                        Color bg = StyleMode == 2
-                            ? Color.FromArgb(242, 247, 247, 245)
-                            : Color.FromArgb(238, 11, 11, 12);
+                        Color bg = StyleMode == 2 ? Color.FromArgb(245, 247, 247, 245)
+                                 : StyleMode == 1 ? Color.FromArgb(242, 11, 11, 12)
+                                 : globalTheme.Fill;
                         _renderer.FillRoundedRect(box, 18, bg);
                     }
                     _renderer.G.Clip = prevClip;
-                    _renderer.DrawRoundedRect(box, 18, Color.FromArgb(StyleMode == 2 ? (byte)40 : (byte)56, 255, 255, 255), 1.0f);
+                    Color rimCol = isLightSurface
+                        ? Color.FromArgb(46, 12, 12, 14)
+                        : (useGlass ? Color.FromArgb(48, globalTheme.Edge.R, globalTheme.Edge.G, globalTheme.Edge.B) : globalTheme.Edge);
+                    _renderer.DrawRoundedRect(box, 18, rimCol, 1.0f);
                 }
 
-                Color ink = StyleMode == 2 ? Color.FromArgb(255, 12, 12, 14) : CustomAccent;
-                Color muted = StyleMode == 2 ? Color.FromArgb(255, 82, 82, 88) : Color.FromArgb(214, 235, 233, 228);
-                Color faint = StyleMode == 2 ? Color.FromArgb(255, 128, 128, 134) : Color.FromArgb(140, 235, 233, 228);
-                Color accent = ThemeSpec.Get(_state.Settings.Theme).Accent;
-                if (StyleMode != 0) accent = ThemeSpec.AdaptiveInkForBackground(ink);
+                Color ink = isLightSurface ? Color.FromArgb(255, 12, 12, 14) : (WidgetType == WidgetType.DayClock ? CustomAccent : globalTheme.TextPrimary);
+                Color muted = isLightSurface ? Color.FromArgb(255, 82, 82, 88) : globalTheme.TextMuted;
+                Color faint = isLightSurface ? Color.FromArgb(255, 128, 128, 134) : globalTheme.TextFaint;
+                Color accent = _state.Settings.AccentColorArgb != 0 ? Color.FromArgb(_state.Settings.AccentColorArgb) : globalTheme.Accent;
+                if (StyleMode == 2) accent = ThemeSpec.AdaptiveInkForBackground(ink);
 
                 DateTime now = DateTime.Now;
                 switch (WidgetType)
@@ -364,28 +370,21 @@ namespace OpenPixel.UI
                 float byWidth = StencilFont.WidthOf(weekday, 1.0f, tracking) <= 0.01f
                     ? innerW
                     : (innerW - (weekday.Length - 1) * tracking) / Math.Max(0.01f, StencilFont.WidthOf(weekday, 1.0f, 0.0f));
-                float cap = Math.Clamp(byWidth, 24.0f * k, 56.0f * k);
-                if (StencilFont.SupportsAll(weekday))
-                {
-                    // Drop shadow matching Mond Desktop Clock dayShadowOffset=2
-                    StencilFont.Draw(_renderer.G, weekday, Width * 0.5f + shadowOff, y + shadowOff, cap, tracking, shadowCol, 0.94f);
-                    StencilFont.Draw(_renderer.G, weekday, Width * 0.5f, y, cap, tracking, ink, 0.96f);
-                }
-                else
-                {
-                    _renderer.DrawTrackedText(weekday, new RectangleF(pad + shadowOff, y + shadowOff, innerW, cap * 1.15f), cap * 0.92f, false, shadowCol, tracking);
-                    _renderer.DrawTrackedText(weekday, new RectangleF(pad, y, innerW, cap * 1.15f), cap * 0.92f, false, ink, tracking);
-                }
+                float cap = Math.Clamp(byWidth, 26.0f * k, 58.0f * k);
+                // Render weekday in the real uploaded Anurati font with wide letter spacing
+                DrawTrackedFontLine(_renderer.G, UiFonts.GetAnurati(cap), weekday, Width * 0.5f + shadowOff, y + shadowOff, tracking, shadowCol);
+                DrawTrackedFontLine(_renderer.G, UiFonts.GetAnurati(cap), weekday, Width * 0.5f, y, tracking, ink);
                 y += cap + 14.0f * k;
             }
 
-            float smallShadow = 1.0f * k;
+            float smallShadow = 1.2f * k;
             if (s.DayClockShowDate)
             {
-                string dateStr = now.ToString("dd MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture);
-                _renderer.DrawTrackedText(dateStr, new RectangleF(pad + smallShadow, y + smallShadow, innerW, 20.0f * k), 13.0f * k, true, shadowCol, 2.0f * k);
-                _renderer.DrawTrackedText(dateStr, new RectangleF(pad, y, innerW, 20.0f * k), 13.0f * k, true, ink, 2.0f * k);
-                y += 23.0f * k;
+                string dateStr = now.ToString("dd MMMM, yyyy.", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
+                float datePx = 19.0f * k;
+                DrawTrackedFontLine(_renderer.G, UiFonts.GetQuicksand(datePx), dateStr, Width * 0.5f + smallShadow, y + smallShadow, 2.2f * k, shadowCol);
+                DrawTrackedFontLine(_renderer.G, UiFonts.GetQuicksand(datePx), dateStr, Width * 0.5f, y, 2.2f * k, ink);
+                y += 28.0f * k;
             }
 
             if (s.DayClockShowTime)
@@ -394,9 +393,10 @@ namespace OpenPixel.UI
                     ? now.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture)
                     : now.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
                 string dashTime = s.DayClockShowDashes ? $"- {timeText} -" : timeText;
-                _renderer.DrawTrackedText(dashTime, new RectangleF(pad + smallShadow, y + smallShadow, innerW, 22.0f * k), 13.5f * k, true, shadowCol, 1.6f * k);
-                _renderer.DrawTrackedText(dashTime, new RectangleF(pad, y, innerW, 22.0f * k), 13.5f * k, true, ink, 1.6f * k);
-                y += 24.0f * k;
+                float timePx = 18.0f * k;
+                DrawTrackedFontLine(_renderer.G, UiFonts.GetQuicksand(timePx), dashTime, Width * 0.5f + smallShadow, y + smallShadow, 1.8f * k, shadowCol);
+                DrawTrackedFontLine(_renderer.G, UiFonts.GetQuicksand(timePx), dashTime, Width * 0.5f, y, 1.8f * k, ink);
+                y += 26.0f * k;
             }
 
             if (s.DayClockShowNowPlaying)
@@ -619,50 +619,38 @@ namespace OpenPixel.UI
 
         private void DrawCalendar(DateTime now, Color ink, Color muted, Color faint, Color accent)
         {
+            // Exact match to live NotchPixel Today widget (282x113):
+            // Large day number + stacked FRI/NOV + Week N + 7-day strip with two-tone today pill.
             float k = ScalePercent / 100.0f;
-            float padX = 18.0f * k;
+            float padX = 16.0f * k;
             float innerW = Width - padX * 2.0f;
+            int week = System.Globalization.ISOWeek.GetWeekOfYear(now);
 
-            // Clean Apple-style header: Accent month name on left, subtle year pill on right
-            _renderer.DrawTextStr(now.ToString("MMMM"), new RectangleF(padX, 12.0f * k, innerW * 0.68f, 24.0f * k), 14.5f * k, true, accent);
-            _renderer.DrawTextStr(now.ToString("yyyy"), new RectangleF(padX + innerW * 0.65f, 14.0f * k, innerW * 0.35f, 20.0f * k), 11.0f * k, false, muted, hAlign: StringAlignment.Far);
+            _renderer.DrawTextStr(now.Day.ToString(), new RectangleF(padX, 8.0f * k, 58.0f * k, 40.0f * k), 28.0f * k, true, ink);
+            _renderer.DrawTextStr(now.ToString("ddd").ToUpperInvariant(), new RectangleF(padX + 54.0f * k, 12.0f * k, 56.0f * k, 18.0f * k), 11.5f * k, true, ink);
+            _renderer.DrawTextStr(now.ToString("MMM").ToUpperInvariant(), new RectangleF(padX + 54.0f * k, 28.0f * k, 56.0f * k, 18.0f * k), 11.5f * k, false, muted);
+            _renderer.DrawTextStr($"Week {week}", new RectangleF(padX + innerW - 88.0f * k, 14.0f * k, 88.0f * k, 20.0f * k), 11.5f * k, false, muted, hAlign: StringAlignment.Far);
 
-            // Subtle divider hairline
-            _renderer.DrawLine(padX, 40.0f * k, Width - padX, 40.0f * k, Color.FromArgb(26, 255, 255, 255), 1.0f);
-
-            string[] headers = { "M", "T", "W", "T", "F", "S", "S" };
-            float dowY = 46.0f * k;
-            float gridTop = 64.0f * k;
+            string[] headers = { "S", "M", "T", "W", "T", "F", "S" };
+            int todayDow = (int)now.DayOfWeek;
+            DateTime sunday = now.AddDays(-todayDow);
             float cellW = innerW / 7.0f;
-            float cellH = (Height - gridTop - 12.0f * k) / 6.0f;
+            float stripTop = 54.0f * k;
+            float pillH = 48.0f * k;
+
             for (int i = 0; i < 7; ++i)
             {
-                Color dowCol = i >= 5 ? Color.FromArgb(145, accent.R, accent.G, accent.B) : faint;
-                _renderer.DrawTextStr(headers[i], new RectangleF(padX + i * cellW, dowY, cellW, 15.0f * k), 8.5f * k, true, dowCol, hAlign: StringAlignment.Center);
-            }
-
-            DateTime first = new(now.Year, now.Month, 1);
-            int offset = ((int)first.DayOfWeek + 6) % 7; // Monday-first
-            int days = DateTime.DaysInMonth(now.Year, now.Month);
-            for (int d = 1; d <= days; ++d)
-            {
-                int slot = offset + d - 1;
-                int col = slot % 7;
-                int row = slot / 7;
-                if (row > 5) break;
-                float cx = padX + col * cellW + cellW * 0.5f;
-                float cy = gridTop + row * cellH + cellH * 0.5f;
-                var cell = new RectangleF(padX + col * cellW, gridTop + row * cellH, cellW, cellH);
-                bool today = d == now.Day;
-                if (today)
+                float x = padX + i * cellW;
+                bool isToday = i == todayDow;
+                if (isToday)
                 {
-                    float rad = Math.Min(cellW, cellH) * 0.42f;
-                    _renderer.FillCircle(cx, cy, rad, accent);
+                    var capRect = new RectangleF(x + 2.0f * k, stripTop, cellW - 4.0f * k, pillH);
+                    _renderer.FillRoundedRect(capRect, 12.0f * k, Color.FromArgb(46, 255, 255, 255));
+                    var botHalf = new RectangleF(capRect.X, capRect.Y + pillH * 0.46f, capRect.Width, pillH * 0.54f);
+                    _renderer.FillRoundedRect(botHalf, 11.0f * k, Color.FromArgb(94, 255, 255, 255));
                 }
-                Color dayCol = today
-                    ? ThemeSpec.AdaptiveInkForBackground(accent)
-                    : (col >= 5 ? muted : ink);
-                _renderer.DrawTextStr(d.ToString(), cell, 10.0f * k, today, dayCol, hAlign: StringAlignment.Center);
+                _renderer.DrawTextStr(headers[i], new RectangleF(x, stripTop + 3.0f * k, cellW, 18.0f * k), 11.0f * k, isToday, isToday ? ink : muted, hAlign: StringAlignment.Center);
+                _renderer.DrawTextStr(sunday.AddDays(i).Day.ToString(), new RectangleF(x, stripTop + 23.0f * k, cellW, 20.0f * k), 12.0f * k, isToday, isToday ? ink : muted, mono: true, hAlign: StringAlignment.Center);
             }
         }
 
@@ -937,33 +925,95 @@ namespace OpenPixel.UI
         private void DrawFocusTimer(Color ink, Color muted, Color accent)
         {
             float k = ScalePercent / 100.0f;
-            int remaining = Math.Max(0, _state.FocusTimerRemainingSec);
-            string label = IslandTabsRenderer.FormatTimeSec(remaining);
+            int total = Math.Max(60, _state.FocusTimerTotalMin * 60);
+            int remaining = Math.Clamp(_state.FocusTimerRemainingSec, 0, total);
+            float frac = Math.Clamp(remaining / (float)total, 0.0f, 1.0f);
+            string timeText = IslandTabsRenderer.FormatTimeSec(remaining);
 
-            _renderer.DrawTextStr("FOCUS", new RectangleF(16, 10, Width - 32, 18), 9.0f * k, true, muted, mono: true);
-            _renderer.DrawTextStr(label, new RectangleF(16, 28, Width - 32, 44), 28.0f * k, true, ink, mono: true, hAlign: StringAlignment.Center);
-
-            var button = new RectangleF(Width * 0.5f - 30.0f * k, Height - 44.0f * k, 60.0f * k, 30.0f * k);
-            _renderer.FillRoundedRect(button, 15.0f * k, accent);
-            _renderer.DrawLucideIcon(_state.FocusTimerRunning ? "pause" : "play",
-                button.X + button.Width * 0.5f, button.Y + button.Height * 0.5f, 12.0f * k,
-                ThemeSpec.AdaptiveInkForBackground(accent));
-            _renderer.AddHitRegion("focus-toggle", button, () =>
+            // Left circular progress ring with glowing dot + monospace countdown (image_1 & image_2)
+            float ringD = Math.Min(Height - 26.0f, 76.0f * k);
+            var ring = new RectangleF(16.0f * k, (Height - ringD) * 0.5f, ringD, ringD);
+            using (var trackPen = new Pen(Color.FromArgb(52, ink.R, ink.G, ink.B), 3.2f * k))
+                _renderer.G.DrawEllipse(trackPen, ring);
+            if (frac > 0.005f)
             {
-                if (!_state.FocusTimerRunning && _state.FocusTimerRemainingSec <= 0) _state.FocusTimerRemainingSec = 25 * 60;
+                using var progPen = new Pen(ink, 3.2f * k) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                _renderer.G.DrawArc(progPen, ring, -90.0f, 360.0f * frac);
+            }
+            // Bright indicator dot at top of ring
+            _renderer.FillCircle(ring.X + ring.Width * 0.5f, ring.Y, 3.2f * k, ink);
+            _renderer.DrawTextStr(timeText, ring, 12.5f * k, true, ink, mono: true, hAlign: StringAlignment.Center);
+
+            // Right column: editable Focus label, "25 + 5 min", white Pause/Play circle + Reset button
+            float rx = ring.Right + 14.0f * k;
+            float rw = Math.Max(60.0f, Width - rx - 12.0f * k);
+            string title = string.IsNullOrWhiteSpace(_state.FocusTimerLabel) ? "Focus" : char.ToUpper(_state.FocusTimerLabel[0]) + _state.FocusTimerLabel.Substring(1);
+            var titleRect = new RectangleF(rx, 16.0f * k, rw, 22.0f * k);
+            _renderer.DrawTextStr(title, titleRect, 13.5f * k, true, ink);
+            _renderer.AddHitRegion("focus-rename", titleRect, () =>
+            {
+                string next = TextPromptForm.Ask("Focus label", "What are you focusing on?", _state.FocusTimerLabel ?? "focus");
+                if (!string.IsNullOrWhiteSpace(next))
+                {
+                    _state.FocusTimerLabel = next.Trim();
+                    RenderNow();
+                }
+            });
+
+            _renderer.DrawTextStr($"{_state.FocusTimerTotalMin} + {_state.FocusTimerBreakMin} min",
+                new RectangleF(rx, 38.0f * k, rw, 18.0f * k), 10.2f * k, false, muted);
+
+            float btnD = 30.0f * k;
+            float btnY = Height - btnD - 18.0f * k;
+            var playRect = new RectangleF(rx, btnY, btnD, btnD);
+            _renderer.FillCircle(playRect.X + btnD * 0.5f, playRect.Y + btnD * 0.5f, btnD * 0.5f, ink);
+            _renderer.DrawLucideIcon(_state.FocusTimerRunning ? "pause" : "play",
+                playRect.X + btnD * 0.5f, playRect.Y + btnD * 0.5f, 11.5f * k,
+                ThemeSpec.AdaptiveInkForBackground(ink));
+            _renderer.AddHitRegion("focus-toggle", playRect, () =>
+            {
+                if (!_state.FocusTimerRunning && _state.FocusTimerRemainingSec <= 0)
+                    _state.FocusTimerRemainingSec = _state.FocusTimerTotalMin * 60;
                 _state.FocusTimerRunning = !_state.FocusTimerRunning;
                 RenderNow();
             });
 
-            var reset = new RectangleF(button.Right + 8, button.Y, 30.0f * k, button.Height);
-            _renderer.FillRoundedRect(reset, 10.0f * k, Color.FromArgb(34, 255, 255, 255));
-            _renderer.DrawTextStr("\u21BA", reset, 13.0f * k, true, muted, hAlign: StringAlignment.Center);
-            _renderer.AddHitRegion("focus-reset", reset, () =>
+            if (!_state.FocusTimerRunning)
             {
-                _state.FocusTimerRemainingSec = 25 * 60;
-                _state.FocusTimerRunning = false;
-                RenderNow();
-            });
+                // Stopped state: - and + minute adjustment pills matching live NotchPixel widget
+                var minusRect = new RectangleF(playRect.Right + 8.0f * k, btnY + 1.0f * k, 28.0f * k, 28.0f * k);
+                _renderer.FillRoundedRect(minusRect, 9.0f * k, Color.FromArgb(30, ink.R, ink.G, ink.B));
+                _renderer.DrawTextStr("\u2212", minusRect, 13.0f * k, true, muted, hAlign: StringAlignment.Center);
+                _renderer.AddHitRegion("focus-minus", minusRect, () =>
+                {
+                    _state.FocusTimerTotalMin = Math.Max(5, _state.FocusTimerTotalMin - 5);
+                    _state.FocusTimerRemainingSec = _state.FocusTimerTotalMin * 60;
+                    RenderNow();
+                });
+
+                var plusRect = new RectangleF(minusRect.Right + 6.0f * k, btnY + 1.0f * k, 28.0f * k, 28.0f * k);
+                _renderer.FillRoundedRect(plusRect, 9.0f * k, Color.FromArgb(30, ink.R, ink.G, ink.B));
+                _renderer.DrawTextStr("+", plusRect, 13.0f * k, true, muted, hAlign: StringAlignment.Center);
+                _renderer.AddHitRegion("focus-plus", plusRect, () =>
+                {
+                    _state.FocusTimerTotalMin = Math.Min(90, _state.FocusTimerTotalMin + 5);
+                    _state.FocusTimerRemainingSec = _state.FocusTimerTotalMin * 60;
+                    RenderNow();
+                });
+            }
+            else
+            {
+                // Running state: Reset button next to Pause
+                var resetRect = new RectangleF(playRect.Right + 8.0f * k, btnY + 1.0f * k, 28.0f * k, 28.0f * k);
+                _renderer.FillRoundedRect(resetRect, 9.0f * k, Color.FromArgb(30, ink.R, ink.G, ink.B));
+                _renderer.DrawTextStr("\u21BA", resetRect, 12.5f * k, true, muted, hAlign: StringAlignment.Center);
+                _renderer.AddHitRegion("focus-reset", resetRect, () =>
+                {
+                    _state.FocusTimerRemainingSec = _state.FocusTimerTotalMin * 60;
+                    _state.FocusTimerRunning = false;
+                    RenderNow();
+                });
+            }
         }
 
         // ------------------------------------------------------------------
@@ -1124,6 +1174,31 @@ namespace OpenPixel.UI
                 }
                 RenderNow();
             });
+        }
+
+        private static void DrawTrackedFontLine(Graphics g, Font font, string text, float centerX, float top, float tracking, Color color)
+        {
+            using (font)
+            using (var brush = new SolidBrush(color))
+            using (var fmt = StringFormat.GenericTypographic)
+            {
+                fmt.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
+                if (string.IsNullOrEmpty(text)) return;
+                float[] widths = new float[text.Length];
+                float totalW = 0.0f;
+                for (int i = 0; i < text.Length; ++i)
+                {
+                    widths[i] = g.MeasureString(text[i].ToString(), font, 1000, fmt).Width;
+                    totalW += widths[i];
+                    if (i < text.Length - 1) totalW += tracking;
+                }
+                float cx = centerX - totalW * 0.5f;
+                for (int i = 0; i < text.Length; ++i)
+                {
+                    g.DrawString(text[i].ToString(), font, brush, cx, top, fmt);
+                    cx += widths[i] + tracking;
+                }
+            }
         }
 
         private static GraphicsPath RoundedPath(RectangleF r, float radius)

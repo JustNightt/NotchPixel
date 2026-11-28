@@ -212,7 +212,8 @@ namespace OpenPixel.Services
                 // exposes no wallpaper content, so it must not be capture-excluded.
                 bool glassActive = !state.Settings.FallbackBlackOnGlassCrash &&
                                    (state.Settings.Theme == SurfaceTheme.LiquidGlass ||
-                                    state.Settings.Theme == SurfaceTheme.CandyGlass);
+                                    state.Settings.Theme == SurfaceTheme.CandyGlass ||
+                                    state.Settings.Theme == SurfaceTheme.Acrylic);
                 exclude = state.Settings.HideFromScreenshots || glassActive;
             }
             Win32Layered.SetWindowDisplayAffinity(hwnd, exclude ? Win32Layered.WDA_EXCLUDEFROMCAPTURE : Win32Layered.WDA_NONE);
@@ -261,6 +262,7 @@ namespace OpenPixel.Services
 
         internal static void ShowVolumeToastLocked(GlobalAppState state, float volPct, bool muted)
         {
+            if (state == null || !state.Settings.VolumeInIsland) return;
             state.ToastPopupType = TopPopupType.Volume;
             state.ToastProgress01 = muted ? 0.0f : (volPct / 100.0f);
             state.ToastTitle = muted ? "Muted" : $"{(int)volPct}%";
@@ -352,7 +354,7 @@ namespace OpenPixel.Services
             GlobalAppState state, string appName, string title, string body, Color accent,
             int processId = 0, string targetUrl = "", bool showNotchToast = true)
         {
-            if (state == null || (string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(body))) return;
+            if (state == null || !state.Settings.NotificationsInIsland || (string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(body))) return;
             long nowMs = ConfigManager.GetTickMs();
             bool inserted = false;
             lock (state.SyncRoot)
@@ -403,6 +405,9 @@ namespace OpenPixel.Services
 
         [DllImport("user32.dll")]
         private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsZoomed(IntPtr hWnd);
 
         public static void OpenNotificationTarget(NotificationItem n)
         {
@@ -2305,6 +2310,7 @@ namespace OpenPixel.Services
                 state.MicPeakLevel = micPeak;
 
                 state.IsFullscreenGameActive = isFullscreen;
+                state.IsForegroundMaximized = fgWnd != IntPtr.Zero && IsZoomed(fgWnd);
                 state.IsGameCursorShowing = cursorShowing;
                 state.ActiveFullscreenApp = fgExe;
 
@@ -2718,7 +2724,7 @@ namespace OpenPixel.Services
 
         public static void OnClipboardUpdated(GlobalAppState state)
         {
-            if (state == null) return;
+            if (state == null || !state.Settings.ClipboardHistoryEnabled) return;
             long nowMs = ConfigManager.GetTickMs();
             if (nowMs < _suppressClipboardUntilMs) return;
 

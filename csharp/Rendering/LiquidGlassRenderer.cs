@@ -41,17 +41,8 @@ namespace OpenPixel.Rendering
         private int _surfaceH = 0;
         private float _dpiScale = 1.0f;
 
-        // Static-background cache for 0% CPU Liquid Glass when background is static
-        private ulong _cachedBackdropHash = 0;
-        private int _cachedGlassW = 0;
-        private int _cachedGlassH = 0;
-        private float _cachedBlurRadius = -1.0f;
-        private int[] _cachedBlurredPixels = Array.Empty<int>();
-        private int[] _capturePixels = Array.Empty<int>();
-        private int[] _refractedPixels = Array.Empty<int>();
-        private int[] _blurTempPixels = Array.Empty<int>();
-        private Bitmap _cachedGlassBitmap;
-        private long _lastGlassCaptureTs = 0;
+        // Full-resolution SkiaSharp (SKRuntimeEffect SkSL + SKImageFilter.CreateBlur) Liquid Glass
+        private readonly SkiaLiquidGlass _skiaGlass = new();
 
         // Luma variance of the last blurred backdrop: 0 means a flat fill, so the
         // self-test can prove the glass is sampling real screen content.
@@ -276,328 +267,42 @@ namespace OpenPixel.Rendering
         }
 
         // ====================================================================
-        // Crash-Proof Liquid Glass & Candy Glass Live Blur + Lens Refraction
-        // - Clamps blurRadius strictly within [0.0f, 40.0f] (never passes 0 or
-        //   negative kernel sizes to the separable blur)
-        // - Hashes 64 sample pixels: reuses cached glass bitmap at 0% CPU when
-        //   the background behind the island is static
-        // - Wrapped in try/catch: returns false on any failure so caller falls
-        //   back cleanly to Black (#0B0B0C)
+        // SkiaSharp Liquid Glass Renderer (SKRuntimeEffect SkSL + SKImageFilter)
+        // Delegates to SkiaLiquidGlass for full-resolution squircle SDF lens
+        // refraction, chromatic rim dispersion, micro-grain, and Gaussian blur.
         // ====================================================================
         public bool RenderLiquidGlassBackdrop(
             Rectangle screenRect,
             float dipX, float dipY, float dipW, float dipH,
             float blurRadiusPx, bool isCandyGlass)
+            => RenderLiquidGlassBackdrop(screenRect, dipX, dipY, dipW, dipH, blurRadiusPx,
+                isCandyGlass ? SurfaceTheme.CandyGlass : SurfaceTheme.LiquidGlass, -1.0f);
+
+        public bool RenderLiquidGlassBackdrop(
+            Rectangle screenRect,
+            float dipX, float dipY, float dipW, float dipH,
+            float blurRadiusPx, SurfaceTheme surfaceTheme,
+            float cornerRadiusPx = -1.0f,
+            float topNotchFlarePx = 0.0f)
         {
-            if (_g == null || dipW <= 4.0f || dipH <= 4.0f) return false;
-            if (screenRect.Width <= 8 || screenRect.Height <= 8 ||
-                screenRect.Width > 4096 || screenRect.Height > 4096)
-            {
-                return false;
-            }
-
-            try
-            {
-                // Clamp blur radius strictly to [0.0f, 40.0f]
-                float safeBlur = Math.Clamp(blurRadiusPx, 0.0f, 40.0f);
-                int capW = Math.Clamp(screenRect.Width / 2, 16, 240);
-                int capH = Math.Clamp(screenRect.Height / 2, 12, 160);
-
-                IntPtr screenDc = Win32Layered.GetDC(IntPtr.Zero);
-                if (screenDc == IntPtr.Zero) return false;
-
-                IntPtr capDc = Win32Layered.CreateCompatibleDC(screenDc);
-                var bmi = new Win32Layered.BITMAPINFO();
-                bmi.bmiHeader.biSize = Marshal.SizeOf<Win32Layered.BITMAPINFOHEADER>();
-                bmi.bmiHeader.biWidth = capW;
-                bmi.bmiHeader.biHeight = -capH;
-                bmi.bmiHeader.biPlanes = 1;
-                bmi.bmiHeader.biBitCount = 32;
-
-                IntPtr capBmp = Win32Layered.CreateDIBSection(screenDc, ref bmi, 0, out IntPtr rawBits, IntPtr.Zero, 0);
-                if (capBmp == IntPtr.Zero || rawBits == IntPtr.Zero)
-                {
-                    if (capBmp != IntPtr.Zero) Win32Layered.DeleteObject(capBmp);
-                    if (capDc != IntPtr.Zero) Win32Layered.DeleteDC(capDc);
-                    Win32Layered.ReleaseDC(IntPtr.Zero, screenDc);
-                    return false;
-                }
-
-                IntPtr old = Win32Layered.SelectObject(capDc, capBmp);
-                Win32Layered.SetStretchBltMode(capDc, 4); // HALFTONE
-                bool bltOk = Win32Layered.StretchBlt(
-                    capDc, 0, 0, capW, capH,
-                    screenDc, screenRect.Left, screenRect.Top, screenRect.Width, screenRect.Height,
-                    0x00CC0020); // SRCCOPY
-
-                Win32Layered.SelectObject(capDc, old);
-                Win32Layered.DeleteDC(capDc);
-                Win32Layered.ReleaseDC(IntPtr.Zero, screenDc);
-
-                if (!bltOk)
-                {
-                    Win32Layered.DeleteObject(capBmp);
-                    return false;
-                }
-
-                int totalPixels = capW * capH;
-                if (_capturePixels.Length != totalPixels) _capturePixels = new int[totalPixels];
-                int[] srcPixels = _capturePixels;
-                Marshal.Copy(rawBits, srcPixels, 0, totalPixels);
-                Win32Layered.DeleteObject(capBmp);
-
-                // 64-point FNV-1a hash check -> 0% CPU when background behind island is static!
-                ulong hash = 14695981039346656037UL;
-                int stride = Math.Max(1, totalPixels / 64);
-                for (int i = 0; i < totalPixels; i += stride)
-                {
-                    hash ^= (uint)srcPixels[i];
-                    hash *= 1099511628211UL;
-                }
-                if (isCandyGlass) hash ^= 0xCA4D1UL;
-
-                bool cacheHit = (hash == _cachedBackdropHash &&
-                                 capW == _cachedGlassW &&
-                                 capH == _cachedGlassH &&
-                                 MathF.Abs(safeBlur - _cachedBlurRadius) < 0.5f &&
-                                 _cachedGlassBitmap != null &&
-                                 _cachedBlurredPixels.Length == totalPixels);
-
-                if (!cacheHit)
-                {
-                    _cachedBackdropHash = hash;
-                    _cachedGlassW = capW;
-                    _cachedGlassH = capH;
-                    _cachedBlurRadius = safeBlur;
-                    if (_cachedBlurredPixels.Length != totalPixels)
-                    {
-                        _cachedBlurredPixels = new int[totalPixels];
-                    }
-
-                    if (_refractedPixels.Length != totalPixels) _refractedPixels = new int[totalPixels];
-                    int[] refracted = _refractedPixels;
-                    float cx = capW * 0.5f;
-                    float cy = capH * 0.5f;
-                    float invRx = 1.0f / Math.Max(1.0f, cx);
-                    float invRy = 1.0f / Math.Max(1.0f, cy);
-
-                    // Pass 1: Exact port of Kyant0/AndroidLiquidGlass Shaders.kt:
-                    // sdRoundedRect + gradSdRoundedRect (gradRadius = min(r*1.5, min(hw, hh)))
-                    // + circleMap lens refraction + 7-tap spectral chromatic dispersion
-                    // + subtle 45-degree directional highlight (ZERO milky white side fade).
-                    float halfW = capW * 0.5f;
-                    float halfH = capH * 0.5f;
-                    float cornerR = MathF.Min(halfW, halfH) * 0.42f;
-                    float gradRadius = MathF.Min(cornerR * 1.5f, MathF.Min(halfW, halfH));
-                    float refractionHeight = MathF.Max(6.0f, MathF.Min(capW, capH) * 0.24f);
-                    float refractionAmount = -MathF.Max(8.0f, MathF.Min(capW, capH) * 0.16f); // negated as in Lens.kt
-                    float invHalfArea = 1.0f / MathF.Max(1.0f, halfW * halfH);
-                    const float cos45 = 0.70710678f;
-                    const float sin45 = 0.70710678f;
-
-                    static float SdRoundedRect(float cxp, float cyp, float hw, float hh, float r)
-                    {
-                        float qx = MathF.Abs(cxp) - (hw - r);
-                        float qy = MathF.Abs(cyp) - (hh - r);
-                        float ox = MathF.Max(qx, 0.0f);
-                        float oy = MathF.Max(qy, 0.0f);
-                        float outside = MathF.Sqrt(ox * ox + oy * oy) - r;
-                        float inside = MathF.Min(MathF.Max(qx, qy), 0.0f);
-                        return outside + inside;
-                    }
-
-                    static (float gx, float gy) GradSdRoundedRect(float cxp, float cyp, float hw, float hh, float r)
-                    {
-                        float sx = cxp < 0.0f ? -1.0f : 1.0f;
-                        float sy = cyp < 0.0f ? -1.0f : 1.0f;
-                        float qx = MathF.Abs(cxp) - (hw - r);
-                        float qy = MathF.Abs(cyp) - (hh - r);
-                        if (qx >= 0.0f || qy >= 0.0f)
-                        {
-                            float mx = MathF.Max(qx, 0.0f);
-                            float my = MathF.Max(qy, 0.0f);
-                            float len = MathF.Sqrt(mx * mx + my * my);
-                            if (len < 1e-4f) return (sx, 0.0f);
-                            return (sx * (mx / len), sy * (my / len));
-                        }
-                        return qx >= qy ? (sx, 0.0f) : (0.0f, sy);
-                    }
-
-                    static (float r, float g, float b) SampleBilinear(int[] buf, int w, int h, float fx, float fy)
-                    {
-                        float cxp = Math.Clamp(fx, 0.0f, w - 1.001f);
-                        float cyp = Math.Clamp(fy, 0.0f, h - 1.001f);
-                        int x0 = (int)cxp, y0 = (int)cyp;
-                        int x1 = Math.Min(x0 + 1, w - 1), y1 = Math.Min(y0 + 1, h - 1);
-                        float tx = cxp - x0, ty = cyp - y0;
-                        uint p00 = (uint)buf[y0 * w + x0];
-                        uint p10 = (uint)buf[y0 * w + x1];
-                        uint p01 = (uint)buf[y1 * w + x0];
-                        uint p11 = (uint)buf[y1 * w + x1];
-                        float w00 = (1f - tx) * (1f - ty), w10 = tx * (1f - ty), w01 = (1f - tx) * ty, w11 = tx * ty;
-                        float r = (((p00 >> 16) & 0xFF) * w00 + ((p10 >> 16) & 0xFF) * w10 + ((p01 >> 16) & 0xFF) * w01 + ((p11 >> 16) & 0xFF) * w11) / 255f;
-                        float g = (((p00 >> 8) & 0xFF) * w00 + ((p10 >> 8) & 0xFF) * w10 + ((p01 >> 8) & 0xFF) * w01 + ((p11 >> 8) & 0xFF) * w11) / 255f;
-                        float b = ((p00 & 0xFF) * w00 + (p10 & 0xFF) * w10 + (p01 & 0xFF) * w01 + (p11 & 0xFF) * w11) / 255f;
-                        return (r, g, b);
-                    }
-
-                    for (int y = 0; y < capH; ++y)
-                    {
-                        float py = (y + 0.5f) - halfH;
-                        for (int x = 0; x < capW; ++x)
-                        {
-                            float pxCoord = (x + 0.5f) - halfW;
-                            float sd = SdRoundedRect(pxCoord, py, halfW, halfH, cornerR);
-
-                            float r, g, b;
-                            if (-sd >= refractionHeight)
-                            {
-                                uint p = (uint)srcPixels[y * capW + x];
-                                r = ((p >> 16) & 0xFF) / 255.0f;
-                                g = ((p >> 8) & 0xFF) / 255.0f;
-                                b = (p & 0xFF) / 255.0f;
-                            }
-                            else
-                            {
-                                float clampedSd = MathF.Min(sd, 0.0f);
-                                float normIn = Math.Clamp(1.0f - (-clampedSd / refractionHeight), 0.0f, 1.0f);
-                                // Kyant0 circleMap(x) = 1.0 - sqrt(1.0 - x*x)
-                                float d = (1.0f - MathF.Sqrt(MathF.Max(0.0f, 1.0f - normIn * normIn))) * refractionAmount;
-                                var (gx, gy) = GradSdRoundedRect(pxCoord, py, halfW, halfH, gradRadius);
-                                float refX = x + d * gx;
-                                float refY = y + d * gy;
-
-                                // Kyant0 7-tap spectral chromatic dispersion (curves at corners, zero side haze)
-                                float dispInt = (pxCoord * py) * invHalfArea;
-                                float dxD = d * gx * dispInt;
-                                float dyD = d * gy * dispInt;
-                                if (MathF.Abs(dxD) + MathF.Abs(dyD) > 0.12f)
-                                {
-                                    var cRed    = SampleBilinear(srcPixels, capW, capH, refX + dxD,             refY + dyD);
-                                    var cOrange = SampleBilinear(srcPixels, capW, capH, refX + dxD * (2f/3f),   refY + dyD * (2f/3f));
-                                    var cYellow = SampleBilinear(srcPixels, capW, capH, refX + dxD * (1f/3f),   refY + dyD * (1f/3f));
-                                    var cGreen  = SampleBilinear(srcPixels, capW, capH, refX,                   refY);
-                                    var cCyan   = SampleBilinear(srcPixels, capW, capH, refX - dxD * (1f/3f),   refY - dyD * (1f/3f));
-                                    var cBlue   = SampleBilinear(srcPixels, capW, capH, refX - dxD * (2f/3f),   refY - dyD * (2f/3f));
-                                    var cPurple = SampleBilinear(srcPixels, capW, capH, refX - dxD,             refY - dyD);
-                                    r = (cRed.r + cOrange.r + cYellow.r) / 3.5f + cPurple.r / 7.0f;
-                                    g = cOrange.g / 7.0f + (cYellow.g + cGreen.g + cCyan.g) / 3.5f;
-                                    b = (cCyan.b + cBlue.b + cPurple.b) / 3.0f;
-                                }
-                                else
-                                {
-                                    (r, g, b) = SampleBilinear(srcPixels, capW, capH, refX, refY);
-                                }
-                            }
-
-                            // Subtle vibrancy boost matching real optical glass
-                            float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-                            r = Math.Clamp(luma + (r - luma) * 1.32f, 0.0f, 1.0f);
-                            g = Math.Clamp(luma + (g - luma) * 1.32f, 0.0f, 1.0f);
-                            b = Math.Clamp(luma + (b - luma) * 1.32f, 0.0f, 1.0f);
-
-                            if (isCandyGlass)
-                            {
-                                float grad = (float)x / Math.Max(1, capW);
-                                r = r * 0.62f + (0.28f * (1.0f - grad) + 0.16f * grad);
-                                g = g * 0.62f + (0.12f * (1.0f - grad) + 0.22f * grad);
-                                b = b * 0.62f + (0.26f * (1.0f - grad) + 0.34f * grad);
-                            }
-                            else
-                            {
-                                // Clean dark-smoked glass readability tint + delicate 1.5px 45-deg edge specular ONLY
-                                float edgeRim = (-sd < 1.8f) ? (1.0f - Math.Clamp(-sd / 1.8f, 0.0f, 1.0f)) : 0.0f;
-                                float spec = 0.0f;
-                                if (edgeRim > 0.01f)
-                                {
-                                    var (hx, hy) = GradSdRoundedRect(pxCoord, py, halfW, halfH, gradRadius);
-                                    spec = MathF.Abs(hx * cos45 + hy * sin45) * edgeRim * 0.16f;
-                                }
-                                r = Math.Clamp(r * 0.68f + 0.03f + spec, 0.0f, 1.0f);
-                                g = Math.Clamp(g * 0.68f + 0.032f + spec, 0.0f, 1.0f);
-                                b = Math.Clamp(b * 0.70f + 0.042f + spec, 0.0f, 1.0f);
-                            }
-
-                            int rb = Math.Clamp((int)(r * 255.0f), 0, 255);
-                            int gb = Math.Clamp((int)(g * 255.0f), 0, 255);
-                            int bb = Math.Clamp((int)(b * 255.0f), 0, 255);
-                            refracted[y * capW + x] = unchecked((int)(0xFF000000u | ((uint)rb << 16) | ((uint)gb << 8) | (uint)bb));
-                        }
-                    }
-
-                    // Pass 2: 3-pass Separable Sliding-Window Gaussian Blur (true frosted glass)
-                    int kernelRadius = Math.Clamp((int)MathF.Round(safeBlur * 0.55f), 0, 22);
-                    if (kernelRadius <= 0)
-                    {
-                        Array.Copy(refracted, _cachedBlurredPixels, totalPixels);
-                    }
-                    else
-                    {
-                        if (_blurTempPixels.Length != totalPixels) _blurTempPixels = new int[totalPixels];
-                        int[] temp = _blurTempPixels;
-                        int[] source = refracted;
-                        for (int iter = 0; iter < 3; ++iter)
-                        {
-                            BoxBlurHorizontal(source, temp, capW, capH, kernelRadius);
-                            BoxBlurVertical(temp, _cachedBlurredPixels, capW, capH, kernelRadius);
-                            source = _cachedBlurredPixels;
-                        }
-                    }
-
-                    if (_cachedGlassBitmap == null || _cachedGlassBitmap.Width != capW || _cachedGlassBitmap.Height != capH)
-                    {
-                        _cachedGlassBitmap?.Dispose();
-                        _cachedGlassBitmap = new Bitmap(capW, capH, PixelFormat.Format32bppPArgb);
-                    }
-
-                    BitmapData bd = _cachedGlassBitmap.LockBits(
-                        new Rectangle(0, 0, capW, capH), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
-                    Marshal.Copy(_cachedBlurredPixels, 0, bd.Scan0, totalPixels);
-                    _cachedGlassBitmap.UnlockBits(bd);
-
-                    double lumaSum = 0, lumaSqSum = 0;
-                    int samples = 0;
-                    for (int i = 0; i < totalPixels; i += 17)
-                    {
-                        uint px = (uint)_cachedBlurredPixels[i];
-                        double luma = 0.2126 * ((px >> 16) & 0xFF) + 0.7152 * ((px >> 8) & 0xFF) + 0.0722 * (px & 0xFF);
-                        lumaSum += luma;
-                        lumaSqSum += luma * luma;
-                        ++samples;
-                    }
-                    if (samples > 0)
-                    {
-                        double mean = lumaSum / samples;
-                        BackdropVariance = Math.Max(0.0, lumaSqSum / samples - mean * mean);
-                    }
-
-                    ulong outHash = 14695981039346656037UL;
-                    for (int i = 0; i < totalPixels; i += 13)
-                    {
-                        outHash ^= (uint)_cachedBlurredPixels[i];
-                        outHash *= 1099511628211UL;
-                    }
-                    BackdropOutputHash = outHash;
-                }
-
-                if (_cachedGlassBitmap != null)
-                {
-                    var prevInterp = _g.InterpolationMode;
-                    _g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    _g.DrawImage(_cachedGlassBitmap, new RectangleF(dipX, dipY, dipW, dipH));
-                    _g.InterpolationMode = prevInterp;
-                    return true;
-                }
-            }
-            catch
-            {
-                // Graceful fallback to Black (#0B0B0C) on any capture or GDI/GPU error
-            }
-            return false;
+            if (_g == null) return false;
+            bool ok = _skiaGlass.Render(_g, screenRect, dipX, dipY, dipW, dipH, blurRadiusPx, surfaceTheme, cornerRadiusPx, topNotchFlarePx);
+            BackdropVariance = _skiaGlass.LastVariance;
+            BackdropOutputHash = _skiaGlass.LastOutputHash;
+            return ok;
         }
 
+        // Pure frosted blur backdrop (for Settings window: no LiquidGlass refraction or edge glow)
+        public bool RenderBlurBackdrop(
+            Rectangle screenRect,
+            float dipX, float dipY, float dipW, float dipH,
+            float blurRadiusPx, Color tintOverlay)
+        {
+            if (_g == null) return false;
+            return _skiaGlass.RenderBlurOnly(_g, screenRect, dipX, dipY, dipW, dipH, blurRadiusPx, tintOverlay);
+        }
         // ====================================================================
-        // Soft Themes Particle Ambience (Rosé, Lavender, Peach, Sakura)
+        // Soft Themes Particle Ambience (RosÃ©, Lavender, Peach, Sakura)
         // ====================================================================
         public void RenderThemeAmbience(SurfaceTheme theme, float left, float top, float width, float height, float timeSec, float intensity = 1.0f)
         {
@@ -1264,7 +969,7 @@ namespace OpenPixel.Rendering
                     break;
                 case "command":
                 {
-                    // Apple Command key (⌘): central square + 4 corner loops
+                    // Apple Command key (âŒ˜): central square + 4 corner loops
                     float lr = r * 0.28f;
                     float off = r * 0.50f;
                     DrawRoundedRect(new RectangleF(cx - off + lr, cy - off + lr, (off - lr) * 2f, (off - lr) * 2f), 0.5f, color, strokeWidth);
@@ -1467,69 +1172,6 @@ namespace OpenPixel.Rendering
             }
         }
 
-        // O(width) separable box blur with clamped edge pixels (same result shape
-        // as the previous per-pixel convolution, far cheaper).
-        private static void BoxBlurHorizontal(int[] src, int[] dst, int w, int h, int radius)
-        {
-            int window = radius * 2 + 1;
-            for (int y = 0; y < h; ++y)
-            {
-                int row = y * w;
-                int sumR = 0, sumG = 0, sumB = 0;
-                for (int k = -radius; k <= radius; ++k)
-                {
-                    uint c = (uint)src[row + Math.Clamp(k, 0, w - 1)];
-                    sumB += (int)(c & 0xFF);
-                    sumG += (int)((c >> 8) & 0xFF);
-                    sumR += (int)((c >> 16) & 0xFF);
-                }
-                for (int x = 0; x < w; ++x)
-                {
-                    dst[row + x] = PackRgb(sumR / window, sumG / window, sumB / window);
-
-                    uint outC = (uint)src[row + Math.Clamp(x - radius, 0, w - 1)];
-                    uint inC = (uint)src[row + Math.Clamp(x + radius + 1, 0, w - 1)];
-                    sumB += (int)(inC & 0xFF) - (int)(outC & 0xFF);
-                    sumG += (int)((inC >> 8) & 0xFF) - (int)((outC >> 8) & 0xFF);
-                    sumR += (int)((inC >> 16) & 0xFF) - (int)((outC >> 16) & 0xFF);
-                }
-            }
-        }
-
-        private static void BoxBlurVertical(int[] src, int[] dst, int w, int h, int radius)
-        {
-            int window = radius * 2 + 1;
-            for (int x = 0; x < w; ++x)
-            {
-                int sumR = 0, sumG = 0, sumB = 0;
-                for (int k = -radius; k <= radius; ++k)
-                {
-                    uint c = (uint)src[Math.Clamp(k, 0, h - 1) * w + x];
-                    sumB += (int)(c & 0xFF);
-                    sumG += (int)((c >> 8) & 0xFF);
-                    sumR += (int)((c >> 16) & 0xFF);
-                }
-                for (int y = 0; y < h; ++y)
-                {
-                    dst[y * w + x] = PackRgb(sumR / window, sumG / window, sumB / window);
-
-                    uint outC = (uint)src[Math.Clamp(y - radius, 0, h - 1) * w + x];
-                    uint inC = (uint)src[Math.Clamp(y + radius + 1, 0, h - 1) * w + x];
-                    sumB += (int)(inC & 0xFF) - (int)(outC & 0xFF);
-                    sumG += (int)((inC >> 8) & 0xFF) - (int)((outC >> 8) & 0xFF);
-                    sumR += (int)((inC >> 16) & 0xFF) - (int)((outC >> 16) & 0xFF);
-                }
-            }
-        }
-
-        private static int PackRgb(int r, int g, int b)
-        {
-            return unchecked((int)(0xFF000000u |
-                ((uint)Math.Clamp(r, 0, 255) << 16) |
-                ((uint)Math.Clamp(g, 0, 255) << 8) |
-                (uint)Math.Clamp(b, 0, 255)));
-        }
-
         private void ReleaseSurface()
         {
             _g?.Dispose();
@@ -1552,8 +1194,7 @@ namespace OpenPixel.Rendering
 
         public void Dispose()
         {
-            _cachedGlassBitmap?.Dispose();
-            _cachedGlassBitmap = null;
+            _skiaGlass.Dispose();
             _shapePath.Dispose();
             _paintBrush.Dispose();
             _paintPen.Dispose();

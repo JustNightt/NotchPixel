@@ -7,24 +7,24 @@ namespace OpenPixel.Core
 {
     public static class DipMetrics
     {
-        public const float PillW = 212.0f;
-        public const float PillH = 36.0f;
-        public const float RecPillW = 250.0f;
-        public const float CardW = 400.0f;
-        public const float FlareR = 10.0f;
+        public const float PillW = 232.0f;
+        public const float PillH = 40.0f;
+        public const float RecPillW = 272.0f;
+        public const float CardW = 432.0f;
+        public const float FlareR = 11.0f;
         public const float TopOffsetIsland = 6.0f;
         public const float TopOffsetNotch = 0.0f;
 
-        public const float HMusic = 150.0f;
-        public const float HChat = 150.0f;
-        public const float HShelf = 156.0f;
-        public const float HLauncher = 160.0f;
-        public const float HCalls = 176.0f;
-        public const float HWidgets = 192.0f;
-        public const float HClipboard = 196.0f;
-        public const float HControls = 204.0f;
-        public const float HNotifications = 232.0f;
-        public const float HWeb = 232.0f;
+        public const float HMusic = 162.0f;
+        public const float HChat = 162.0f;
+        public const float HShelf = 166.0f;
+        public const float HLauncher = 170.0f;
+        public const float HCalls = 186.0f;
+        public const float HWidgets = 206.0f;
+        public const float HClipboard = 206.0f;
+        public const float HControls = 216.0f;
+        public const float HNotifications = 244.0f;
+        public const float HWeb = 244.0f;
     }
 
     public enum IslandShape { Island = 0, Notch = 1 }
@@ -82,7 +82,8 @@ namespace OpenPixel.Core
         Widgets = 6,
         Controls = 7,
         Launcher = 8,
-        Calls = 9
+        Calls = 9,
+        PhoneDeck = 10
     }
 
     public enum ClipboardCategory
@@ -101,15 +102,17 @@ namespace OpenPixel.Core
         Accessibility = 1,
         Appearance = 2,
         Island = 3,
-        Panels = 4,
-        Widgets = 5,
-        Calls = 6,
-        Streaming = 7,
-        Gaming = 8,
-        AiAgents = 9,
-        Tools = 10,
-        Keys = 11,
-        About = 12
+        Taskbar = 4,
+        Panels = 5,
+        Widgets = 6,
+        Wallpaper = 7,
+        Calls = 8,
+        Streaming = 9,
+        Gaming = 10,
+        AiAgents = 11,
+        Tools = 12,
+        Keys = 13,
+        About = 14
     }
 
     public enum GameOverlayMode
@@ -380,14 +383,15 @@ namespace OpenPixel.Core
         {
             PanelId.Music => DipMetrics.HMusic,
             PanelId.Web => DipMetrics.HWeb,
-            PanelId.Notifications => DipMetrics.HNotifications,
+            PanelId.Notifications => 228.0f,
             PanelId.Chat => DipMetrics.HChat,
             PanelId.Shelf => DipMetrics.HShelf,
             PanelId.Clipboard => DipMetrics.HClipboard,
             PanelId.Widgets => DipMetrics.HWidgets,
             PanelId.Controls => DipMetrics.HControls,
             PanelId.Launcher => DipMetrics.HLauncher,
-            PanelId.Calls => DipMetrics.HCalls,
+            PanelId.Calls => 172.0f,
+            PanelId.PhoneDeck => 160.0f,
             _ => DipMetrics.HMusic
         };
     }

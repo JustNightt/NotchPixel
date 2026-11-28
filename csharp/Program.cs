@@ -22,6 +22,8 @@ namespace OpenPixel
         private readonly GlobalAppState _state = GlobalAppState.Instance;
         private readonly LiquidGlassRenderer _renderer = new();
         private SettingsWindow _settingsWindow;
+        private OnboardingWindow _onboardingWindow;
+        private readonly bool _forceOnboarding;
         private NotifyIcon _trayIcon;
 
         private readonly System.Windows.Forms.Timer _animTimer;
@@ -58,8 +60,9 @@ namespace OpenPixel
         private const int HK_COLOR_PICKER = 1006; // Ctrl+Alt+C (/support Section 9)
         private const int HK_SLOT_BASE    = 1011; // Ctrl+Alt+1..6
 
-        public IslandMainForm()
+        public IslandMainForm(bool forceOnboarding = false)
         {
+            _forceOnboarding = forceOnboarding;
             Text = "OpenPixel";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -86,12 +89,15 @@ namespace OpenPixel
                 catch { }
             });
 
-            _settingsWindow = new SettingsWindow(_state, () =>
+            Action onSettingsChanged = () =>
             {
                 PositionOnTargetMonitor();
                 WindowsSystemHooks.ApplyWindowCaptureAffinity(Handle, _state);
                 RenderIslandNow();
-            }, OpenIslandNow);
+            };
+
+            _onboardingWindow = new OnboardingWindow(_state, onSettingsChanged);
+            _settingsWindow = new SettingsWindow(_state, onSettingsChanged, OpenIslandNow, () => _onboardingWindow.ShowFromStart());
 
             _animTimer = new System.Windows.Forms.Timer { Interval = 16 };
             _animTimer.Tick += (_, _) => StepSpringsAndRender();
@@ -174,6 +180,7 @@ namespace OpenPixel
 
             var trayMenu = new ContextMenuStrip();
             trayMenu.Items.Add("NotchPixel 0.5.126 Settings", null, (_, _) => _settingsWindow.ToggleVisibility());
+            trayMenu.Items.Add("Welcome setup", null, (_, _) => _onboardingWindow.ShowFromStart());
             trayMenu.Items.Add("Pin Desktop Day Clock", null, (_, _) => AuxiliaryWindows.ToggleDesktopWidget(_state, WidgetType.DayClock));
             trayMenu.Items.Add("Toggle Live Video Wallpaper", null, (_, _) =>
             {
@@ -215,6 +222,10 @@ namespace OpenPixel
             {
                 AuxiliaryWindows.HookDisplayReclamp(_state);
                 AuxiliaryWindows.RestorePinnedWidgets(_state);
+                if (_forceOnboarding || !_state.Settings.HasCompletedOnboarding)
+                {
+                    _onboardingWindow?.ShowFromStart();
+                }
             }));
             Win32Layered.AddClipboardFormatListener(Handle);
             DragAcceptFiles(Handle, true);
@@ -397,6 +408,15 @@ namespace OpenPixel
                 }
 
                 moving |= _state.NotchSpring.Step(dt, in SpringPresets.Close, speed, red);
+                bool wantSlimIdle = !_state.IslandOpen &&
+                                    _state.Settings.SlimStripUnderMaximized &&
+                                    _state.IsForegroundMaximized &&
+                                    !_state.ToastActive &&
+                                    !_state.IsFullscreenGameActive &&
+                                    !_state.Sensors.MicActive &&
+                                    !_state.FocusTimerRunning;
+                _state.SlimIdleSpring.SetTarget(wantSlimIdle ? 100.0f : 0.0f, red);
+                moving |= _state.SlimIdleSpring.Step(dt, in SpringPresets.Close, speed, red);
                 moving |= _state.RecSpring.Step(dt, in SpringPresets.Open, speed, red);
                 moving |= _state.FlipSpring.Step(dt, in SpringPresets.Open, speed, red);
 
@@ -593,7 +613,8 @@ namespace OpenPixel
                 int lp = m.LParam.ToInt32();
                 Point pt = PointToClient(new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)));
                 IslandTabsRenderer.ComputeCurrentIslandGeometry(_state, Width, out float left, out float top, out float w, out float h, out _);
-                if (w > 1 && h > 1 && pt.X >= left - 4 && pt.X <= left + w + 4 && pt.Y >= top && pt.Y <= top + h + 4)
+                float hitPadY = h <= 10.0f ? 10.0f : 4.0f;
+                if (w > 1 && h > 1 && pt.X >= left - 4 && pt.X <= left + w + 4 && pt.Y >= top && pt.Y <= top + h + hitPadY)
                 {
                     m.Result = new IntPtr(HTCLIENT);
                 }
@@ -907,6 +928,8 @@ namespace OpenPixel
             _trayIcon.Dispose();
             AuxiliaryWindows.CloseAll(_state);
             ConfigManager.SaveAtomic(_state);
+            _onboardingWindow?.Close();
+            _onboardingWindow?.Dispose();
             _settingsWindow?.Close();
             _settingsWindow?.Dispose();
             _renderer.Dispose();
@@ -1360,8 +1383,14 @@ IslandTabsRenderer.ComputeCurrentIslandGeometry(state, 520, out float dl, out fl
                 try { AuxiliaryWindows.RestoreWindowsNativeTaskbar(); } catch { }
             };
 
+            bool forceOnboarding = false;
             for (int i = 0; i < args.Length; ++i)
             {
+                if (args[i] == "--onboarding")
+                {
+                    forceOnboarding = true;
+                    continue;
+                }
                 if (args[i] == "--watchdog" && i + 1 < args.Length && int.TryParse(args[i + 1], out int parentPid))
                 {
                     try
@@ -1404,6 +1433,38 @@ IslandTabsRenderer.ComputeCurrentIslandGeometry(state, 520, out float dl, out fl
                 if (args[i] == "--video-test-file" && i + 1 < args.Length)
                 {
                     return VideoTestClip.Run(args[i + 1], generateClip: false);
+                }
+                if (args[i] == "--glass-test")
+                {
+                    string outDir = Path.GetTempPath();
+                    using var glass = new SkiaLiquidGlass();
+                    using var bLg = new Bitmap(420, 180, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                    using var bCandy = new Bitmap(420, 180, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                    using var bSetBlur = new Bitmap(420, 180, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                    using var bSetCandy = new Bitmap(420, 180, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                    bool ok0, ok14, okCandy, okSb, okSc;
+                    double v0, v14;
+                    ulong h0, h14;
+                    using (var g0 = Graphics.FromImage(bLg))
+                    {
+                        ok0 = glass.Render(g0, new Rectangle(520, 320, 420, 180), 0, 0, 420, 180, 0.0f, SurfaceTheme.LiquidGlass, 26.0f);
+                        v0 = glass.LastVariance; h0 = glass.LastOutputHash;
+                        ok14 = glass.Render(g0, new Rectangle(520, 320, 420, 180), 0, 0, 420, 180, 14.0f, SurfaceTheme.LiquidGlass, 26.0f);
+                        v14 = glass.LastVariance; h14 = glass.LastOutputHash;
+                    }
+                    using (var gc = Graphics.FromImage(bCandy))
+                        okCandy = glass.Render(gc, new Rectangle(520, 320, 420, 180), 0, 0, 420, 180, 14.0f, SurfaceTheme.CandyGlass, 26.0f);
+                    using (var gsb = Graphics.FromImage(bSetBlur))
+                        okSb = glass.RenderBlurOnly(gsb, new Rectangle(520, 320, 420, 180), 0, 0, 420, 180, 22.0f, Color.FromArgb(168, 11, 12, 15));
+                    using (var gsc = Graphics.FromImage(bSetCandy))
+                        okSc = glass.RenderBlurOnly(gsc, new Rectangle(520, 320, 420, 180), 0, 0, 420, 180, 22.0f, Color.FromArgb(162, 58, 18, 46));
+                    bLg.Save(Path.Combine(outDir, "skia_lg_r14.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    bCandy.Save(Path.Combine(outDir, "skia_candy_r14.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    bSetBlur.Save(Path.Combine(outDir, "skia_settings_blur.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    bSetCandy.Save(Path.Combine(outDir, "skia_settings_candy.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    File.WriteAllText(Path.Combine(outDir, "skia_glass_test.txt"),
+                        $"ok0={ok0} v0={v0:F2} h0={h0}\nok14={ok14} v14={v14:F2} h14={h14}\nokCandy={okCandy} okSb={okSb} okSc={okSc}\neffectErr={SkiaLiquidGlass.LastEffectError}\nrenderErr={SkiaLiquidGlass.LastRenderError}\n");
+                    return 0;
                 }
                 if (args[i] == "--render-test")
                 {
@@ -1468,7 +1529,7 @@ IslandTabsRenderer.ComputeCurrentIslandGeometry(state, 520, out float dl, out fl
             WindowsSystemHooks.Initialize(state);
             LocalNetworkServers.Start(state);
 
-            Application.Run(new IslandMainForm());
+            Application.Run(new IslandMainForm(forceOnboarding));
 
             LocalNetworkServers.Stop();
             ConfigManager.SaveAtomic(state);

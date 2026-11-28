@@ -3,6 +3,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <WindowsSdkPackageVersion>10.0.19041.57</WindowsSdkPackageVersion>
+    <RollForward>LatestMajor</RollForward>
     <UseWindowsForms>true</UseWindowsForms>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>disable</Nullable>
@@ -27,10 +28,14 @@
     <EmbeddedResource Include="assets\fonts\*.ttf">
       <LogicalName>OpenPixel.Fonts.%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="assets\fonts\*.otf">
+      <LogicalName>OpenPixel.Fonts.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4370.26" />
+    <PackageReference Include="SkiaSharp" Version="*" />
     <PackageReference Include="System.Management" Version="10.0.2" />
   </ItemGroup>
 
@@ -95,5 +100,9 @@
     </ItemGroup>
     <Copy SourceFiles="@(RootRuntimeDlls)" DestinationFiles="@(RootRuntimeDllTarget)" SkipUnchangedFiles="true" Retries="5" RetryDelayMilliseconds="200" ContinueOnError="WarnAndContinue" />
     <Copy SourceFiles="@(RootWebNative)" DestinationFiles="@(RootWebNativeTarget)" SkipUnchangedFiles="true" Retries="5" RetryDelayMilliseconds="200" ContinueOnError="WarnAndContinue" />
+    <!-- Remove stale self-contained host DLLs from the repo root so the framework-dependent
+         OpenPixel.exe always resolves the installed .NET Desktop Runtime instead of failing
+         with a false ".NET Desktop Runtime required" prompt. -->
+    <Delete Files="$(RootAppDir)hostfxr.dll;$(RootAppDir)hostpolicy.dll;$(RootAppDir)coreclr.dll" ContinueOnError="WarnAndContinue" />
   </Target>
 </Project>

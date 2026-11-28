@@ -18,11 +18,12 @@ namespace OpenPixel.UI
     // ========================================================================
     public sealed class SettingsWindow : Form
     {
-        private const float UiScaleBase = 1.4f;
-        private const float RailWidth = 190.0f;
-        private const float ContentLeft = 214.0f;
-        private const float HeaderBottom = 84.0f;
-        private const float ViewTop = 96.0f;
+        private const float UiScaleBase = 1.15f;
+        private const float RailWidth = 228.0f;
+        private const float ContentLeft = 262.0f;
+        private const float TopBarHeight = 46.0f;
+        private const float HeaderBottom = 114.0f;
+        private const float ViewTop = 122.0f;
         private const float ViewBottomPad = 18.0f;
 
         private const float SegH = 40.0f;
@@ -33,7 +34,53 @@ namespace OpenPixel.UI
         private readonly GlobalAppState _state;
         private readonly Action _onSettingsChanged;
         private readonly Action _onOpenIslandPreview;
+        private readonly Action _onOpenOnboarding;
         private readonly LiquidGlassRenderer _renderer = new();
+
+        private bool _langDropdownOpen = false;
+        private RectangleF _langAnchorRect = RectangleF.Empty;
+        private Bitmap _wheelBitmap;
+        private RectangleF _wheelRect = RectangleF.Empty;
+        private RectangleF _valBarRect = RectangleF.Empty;
+        private bool _draggingWheel = false;
+        private bool _draggingValBar = false;
+        private float _wheelHue = 0.0f;
+        private float _wheelSat = 0.0f;
+        private float _wheelVal = 1.0f;
+        private int _wheelSyncArgb = 0;
+
+        private static readonly (string Code, string Label)[] LanguageOptions =
+        {
+            ("system", "Same as Windows"),
+            ("en",     "English"),
+            ("es",     "Espa\u00F1ol"),
+            ("fr",     "Fran\u00E7ais"),
+            ("de",     "Deutsch"),
+            ("pt",     "Portugu\u00EAs"),
+            ("ja",     "\u65E5\u672C\u8A9E"),
+            ("zh",     "\u4E2D\u6587"),
+            ("ar",     "\u0627\u0644\u0639\u0631\u0628\u064A\u0629")
+        };
+
+        private static readonly byte[,] PixelN =
+        {
+            { 1, 0, 0, 0, 0, 0, 1 },
+            { 1, 1, 0, 0, 0, 0, 1 },
+            { 1, 0, 1, 0, 0, 0, 1 },
+            { 1, 0, 0, 1, 0, 0, 1 },
+            { 1, 0, 0, 0, 1, 0, 1 },
+            { 1, 0, 0, 0, 0, 2, 1 },
+            { 1, 0, 0, 0, 0, 0, 1 }
+        };
+
+        private static string AppVersionString
+        {
+            get
+            {
+                Version v = typeof(SettingsWindow).Assembly.GetName().Version;
+                return v != null ? v.ToString(4) : "0.5.126.0";
+            }
+        }
 
         private float _uiScale = UiScaleBase;
         private float LogicalWidth => Width / _uiScale;
@@ -75,16 +122,38 @@ namespace OpenPixel.UI
             (SettingsCategory.General,       "General",       "sliders-horizontal"),
             (SettingsCategory.Accessibility, "Accessibility", "eye"),
             (SettingsCategory.Appearance,    "Appearance",    "palette"),
-            (SettingsCategory.Island,        "Island",        "layout-grid"),
-            (SettingsCategory.Panels,        "Panels",        "folder"),
-            (SettingsCategory.Widgets,       "Widgets",       "calendar"),
-            (SettingsCategory.Calls,         "Calls",         "headphones"),
-            (SettingsCategory.Streaming,     "Streaming",     "video"),
+            (SettingsCategory.Island,        "Island",        "island"),
+            (SettingsCategory.Taskbar,       "Taskbar",       "taskbar"),
+            (SettingsCategory.Panels,        "Panels",        "layout-grid"),
+            (SettingsCategory.Widgets,       "Widgets",       "gauge"),
+            (SettingsCategory.Wallpaper,     "Wallpaper",     "image"),
+            (SettingsCategory.Calls,         "Calls",         "mic"),
+            (SettingsCategory.Streaming,     "Streaming",     "radio"),
             (SettingsCategory.Gaming,        "Gaming",        "gamepad"),
-            (SettingsCategory.AiAgents,      "AI agents",     "cpu"),
-            (SettingsCategory.Tools,         "Tools",         "smartphone"),
-            (SettingsCategory.Keys,          "Shortcuts",     "command"),
+            (SettingsCategory.AiAgents,      "AI agents",     "terminal"),
+            (SettingsCategory.Tools,         "Tools",         "zap"),
+            (SettingsCategory.Keys,          "Keys",          "keyboard"),
             (SettingsCategory.About,         "About",         "info")
+        };
+
+        private static string SearchKeywordsFor(SettingsCategory cat) => cat switch
+        {
+            SettingsCategory.General => "language startup run windows slim strip maximized last tab music processor cpu",
+            SettingsCategory.Accessibility => "text scale contrast reduce motion notice duration",
+            SettingsCategory.Appearance => "theme liquid glass acrylic blur accent corner radius pill size visualizer",
+            SettingsCategory.Island => "monitor edge placement hover delay auto hide screenshot privacy",
+            SettingsCategory.Taskbar => "notchpixel taskbar every screen own apps hide maximized window previews win key number",
+            SettingsCategory.Panels => "notifications volume clipboard history timestamps tab",
+            SettingsCategory.Widgets => "day clock desktop size colour color wheel hex calendar focus timer weather stats todo world clock photos batteries",
+            SettingsCategory.Wallpaper => "live video wallpaper mp4 mkv mov webm hue saturation brightness contrast colours",
+            SettingsCategory.Calls => "microphone mute voice waveform",
+            SettingsCategory.Streaming => "twitch youtube chat obs recording",
+            SettingsCategory.Gaming => "fps strip overlay fullscreen game",
+            SettingsCategory.AiAgents => "claude codex antigravity coding agent",
+            SettingsCategory.Tools => "pc deck phone qr stream deck",
+            SettingsCategory.Keys => "shortcut hotkey keybinding",
+            SettingsCategory.About => "version diagnostic welcome setup onboarding",
+            _ => ""
         };
 
         private static readonly Color[] AccentChoices =
@@ -94,11 +163,12 @@ namespace OpenPixel.UI
             Color.FromArgb(255, 48, 209, 88), Color.FromArgb(255, 245, 245, 247)
         };
 
-        public SettingsWindow(GlobalAppState state, Action onSettingsChanged, Action onOpenIslandPreview = null)
+        public SettingsWindow(GlobalAppState state, Action onSettingsChanged, Action onOpenIslandPreview = null, Action onOpenOnboarding = null)
         {
             _state = state;
             _onSettingsChanged = onSettingsChanged;
             _onOpenIslandPreview = onOpenIslandPreview;
+            _onOpenOnboarding = onOpenOnboarding;
             Text = "NotchPixel Settings";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = true;
@@ -134,11 +204,38 @@ namespace OpenPixel.UI
             }
         }
 
+        private bool _swallowing = false;
+        private float _swallowProgress = 0.0f;
+        private Rectangle _normalBounds = Rectangle.Empty;
+
+        public void DismissWithSwallow()
+        {
+            FlushPendingSave();
+            _langDropdownOpen = false;
+            if (!Visible) return;
+            if (_state.Settings.ReduceMotion)
+            {
+                Hide();
+                return;
+            }
+            if (!_swallowing)
+            {
+                _normalBounds = Bounds;
+                _swallowing = true;
+                _swallowProgress = 0.0f;
+                _lastAnimMs = Environment.TickCount64;
+                if (!_animTimer.Enabled) _animTimer.Start();
+            }
+        }
+
         public void ToggleVisibility()
         {
-            if (Visible) Hide();
+            if (Visible && !_swallowing) DismissWithSwallow();
             else
             {
+                _swallowing = false;
+                _swallowProgress = 0.0f;
+                if (!_normalBounds.IsEmpty) Bounds = _normalBounds;
                 _windowReveal = _state.Settings.ReduceMotion ? 1.0f : 0.0f;
                 _lastAnimMs = 0;
                 Show();
@@ -168,8 +265,7 @@ namespace OpenPixel.UI
             if (e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
-                FlushPendingSave();
-                Hide();
+                DismissWithSwallow();
                 return;
             }
             base.OnFormClosing(e);
@@ -246,8 +342,7 @@ namespace OpenPixel.UI
                 }
                 else
                 {
-                    FlushPendingSave();
-                    Hide();
+                    DismissWithSwallow();
                 }
                 e.Handled = true;
             }
@@ -384,6 +479,34 @@ namespace OpenPixel.UI
             float dt = _lastAnimMs > 0 ? Math.Clamp((now - _lastAnimMs) / 1000.0f, 0.001f, 0.08f) : 0.016f;
             _lastAnimMs = now;
 
+            if (_swallowing)
+            {
+                _swallowProgress = Math.Min(1.0f, _swallowProgress + dt * 4.8f);
+                float t = _swallowProgress * _swallowProgress * (3.0f - 2.0f * _swallowProgress);
+                Rectangle scr = Screen.FromControl(this).Bounds;
+                int targetW = 190;
+                int targetH = 38;
+                int targetX = scr.Left + (scr.Width - targetW) / 2;
+                int targetY = scr.Top;
+                int nx = (int)MathF.Round(_normalBounds.X + (targetX - _normalBounds.X) * t);
+                int ny = (int)MathF.Round(_normalBounds.Y + (targetY - _normalBounds.Y) * t);
+                int nw = Math.Max(140, (int)MathF.Round(_normalBounds.Width + (targetW - _normalBounds.Width) * t));
+                int nh = Math.Max(34, (int)MathF.Round(_normalBounds.Height + (targetH - _normalBounds.Height) * t));
+                Bounds = new Rectangle(nx, ny, nw, nh);
+                _windowReveal = Math.Clamp(1.0f - t, 0.0f, 1.0f);
+                if (_swallowProgress >= 1.0f)
+                {
+                    _swallowing = false;
+                    _swallowProgress = 0.0f;
+                    _windowReveal = 1.0f;
+                    Hide();
+                    Bounds = _normalBounds;
+                    return;
+                }
+                RenderNow();
+                return;
+            }
+
             bool moved = false;
 
             float nav = Approach(_navY, _navTargetY, dt, 15.0f);
@@ -513,50 +636,91 @@ namespace OpenPixel.UI
 
                 _scrollShown = Math.Clamp(_scrollShown, 0.0f, Math.Max(0.0f, _maxScroll));
 
-                // Window frame (deep obsidian #0B0B0C matching notchpixel.com Windows Settings app)
-                var frame = new RectangleF(1, 1, LW - 2, LH - 2);
-                Color winFill = theme.IsLight ? theme.Fill : Color.FromArgb(255, 11, 11, 12);
-                _renderer.FillRoundedRect(frame, 14, winFill);
-                _renderer.DrawRoundedRect(frame, 14, hairline, 1.0f);
+                // Window frame adopting the active global theme (Pure black, Pure white, Candy glass tint, Rosé/Lavender/Peach/Sakura, etc.)
+                var frame = new RectangleF(0.5f, 0.5f, LW - 1.0f, LH - 1.0f);
+                Color winFill = s.Theme switch
+                {
+                    SurfaceTheme.PureBlack => Color.FromArgb(255, 0, 0, 0),
+                    SurfaceTheme.PureWhite => Color.FromArgb(255, 246, 246, 244),
+                    SurfaceTheme.Graphite => Color.FromArgb(255, 24, 24, 26),
+                    SurfaceTheme.CandyGlass => Color.FromArgb(255, 28, 13, 25),
+                    SurfaceTheme.Rose => Color.FromArgb(255, 28, 15, 20),
+                    SurfaceTheme.Lavender => Color.FromArgb(255, 20, 17, 30),
+                    SurfaceTheme.Peach => Color.FromArgb(255, 30, 19, 14),
+                    SurfaceTheme.Sakura => Color.FromArgb(255, 31, 16, 23),
+                    _ => Color.FromArgb(255, 11, 11, 12)
+                };
+                Color railDivider = theme.IsLight ? Color.FromArgb(255, 224, 224, 226) : Color.FromArgb(32, 255, 255, 255);
+                Color outerEdge = s.Theme == SurfaceTheme.CandyGlass
+                    ? Color.FromArgb(145, 255, 158, 207)
+                    : (theme.IsLight ? Color.FromArgb(255, 210, 210, 214) : Color.FromArgb(255, 34, 34, 38));
+                bool useBlurBg = !_swallowing && (s.Theme == SurfaceTheme.LiquidGlass || s.Theme == SurfaceTheme.CandyGlass || s.Theme == SurfaceTheme.Acrylic);
+                bool drewSettingsBlur = false;
+                if (useBlurBg)
+                {
+                    using var gp = CreateRoundedPath(frame, 12);
+                    Region prevC = _renderer.G.Clip;
+                    _renderer.G.SetClip(gp, CombineMode.Replace);
+                    // Settings uses a clean frosted blur background (NO LiquidGlass refraction or edge glow).
+                    // Candy glass gets a soft pinkish frosted blur; LiquidGlass/Acrylic get a clean dark blur.
+                    Color blurTint = s.Theme == SurfaceTheme.CandyGlass
+                        ? Color.FromArgb(162, 58, 18, 46)
+                        : (s.Theme == SurfaceTheme.Acrylic ? Color.FromArgb(178, 16, 16, 20) : Color.FromArgb(168, 11, 12, 15));
+                    drewSettingsBlur = _renderer.RenderBlurBackdrop(Bounds, 0, 0, LW, LH, MathF.Max(18.0f, s.GlassBlurRadius), blurTint);
+                    _renderer.G.Clip = prevC;
+                }
+                if (!drewSettingsBlur)
+                {
+                    _renderer.FillRoundedRect(frame, 12, winFill);
+                    if (s.Theme == SurfaceTheme.CandyGlass)
+                    {
+                        using var candyGlow = new LinearGradientBrush(frame,
+                            Color.FromArgb(46, 225, 85, 165), Color.FromArgb(16, 120, 45, 155), LinearGradientMode.ForwardDiagonal);
+                        using var gp = CreateRoundedPath(frame, 12);
+                        _renderer.G.FillPath(candyGlow, gp);
+                    }
+                }
+                _renderer.DrawRoundedRect(frame, 12, outerEdge, 1.0f);
 
-                // Subtle minimize + close buttons in top-right corner
-                var minBtn = new RectangleF(LW - 66, 12, 24, 24);
-                float minHover = GetHover("btn-min", _renderer.IsHovered(minBtn, _mouseX, _mouseY));
-                if (minHover > 0.01f)
-                    _renderer.FillRoundedRect(minBtn, 8, Color.FromArgb((int)(42 * minHover), 255, 255, 255));
-                _renderer.DrawTextStr("\u2014", minBtn, 11.0f, true, minHover > 0.5f ? Color.White : theme.TextMuted, hAlign: StringAlignment.Center);
-                _renderer.AddHitRegion("settings-min", minBtn, () => WindowState = FormWindowState.Minimized);
+                // Top chrome bar: small square N badge + bold NotchPixel + mono version + close X
+                DrawTopBarBadge(new RectangleF(18, 12, 22, 22));
+                _renderer.DrawTextStr("NotchPixel", new RectangleF(48, 10, 96, 26), 13.0f, true, Color.FromArgb(255, 245, 245, 247));
+                _renderer.DrawTextStr(AppVersionString, new RectangleF(134, 12, 92, 24), 9.0f, false, Color.FromArgb(255, 120, 120, 126), mono: true);
 
-                var closeBtn = new RectangleF(LW - 36, 12, 24, 24);
+                var closeBtn = new RectangleF(LW - 38, 10, 26, 26);
                 float closeHover = GetHover("btn-close", _renderer.IsHovered(closeBtn, _mouseX, _mouseY));
                 if (closeHover > 0.01f)
-                    _renderer.FillRoundedRect(closeBtn, 8, Color.FromArgb((int)(210 * closeHover), 255, 69, 58));
-                _renderer.DrawTextStr("\u00D7", closeBtn, 15.0f, false, closeHover > 0.5f ? Color.White : theme.TextMuted, hAlign: StringAlignment.Center);
-                _renderer.AddHitRegion("settings-close", closeBtn, () => Hide());
+                    _renderer.FillRoundedRect(closeBtn, 7, Color.FromArgb((int)(34 * closeHover), 255, 255, 255));
+                DrawCloseGlyph(closeBtn, Mix(Color.FromArgb(255, 158, 158, 164), Color.White, closeHover));
+                _renderer.AddHitRegion("settings-close", closeBtn, DismissWithSwallow);
 
-                // Search field right at the top of the left rail (exact match to step_58_shot_4.png)
-                var searchBox = new RectangleF(18, 16, RailWidth - 28, 30);
+                // Rounded pill search field at the top of the left rail
+                var searchBox = new RectangleF(12, 50, RailWidth - 24, 32);
                 bool searchHover = _renderer.IsHovered(searchBox, _mouseX, _mouseY);
                 float searchGlow = GetHover("search", searchHover || !string.IsNullOrEmpty(_state.SettingsSearchQuery));
-                _renderer.FillRoundedRect(searchBox, 10, Color.FromArgb(22, 255, 255, 255));
-                _renderer.DrawRoundedRect(searchBox, 10, Mix(hairline, Color.FromArgb(130, 239, 237, 232), searchGlow), 1.0f);
-                _renderer.DrawLucideIcon("search", searchBox.X + 14, searchBox.Y + 15, 11.0f, theme.TextFaint, 1.4f);
+                _renderer.FillRoundedRect(searchBox, 16, Color.FromArgb(255, 16, 16, 18));
+                _renderer.DrawRoundedRect(searchBox, 16, Mix(Color.FromArgb(255, 42, 42, 46), Color.FromArgb(255, 96, 96, 104), searchGlow), 1.0f);
+                _renderer.DrawLucideIcon("search", searchBox.X + 16, searchBox.Y + 16, 11.0f, Color.FromArgb(255, 130, 130, 136), 1.4f);
                 _renderer.DrawTextStr(string.IsNullOrEmpty(_state.SettingsSearchQuery) ? "Search settings" : _state.SettingsSearchQuery,
-                    new RectangleF(searchBox.X + 26, searchBox.Y, searchBox.Width - 32, searchBox.Height),
-                    10.5f, false, string.IsNullOrEmpty(_state.SettingsSearchQuery) ? theme.TextFaint : theme.TextPrimary);
+                    new RectangleF(searchBox.X + 30, searchBox.Y, searchBox.Width - 38, searchBox.Height),
+                    10.2f, false, string.IsNullOrEmpty(_state.SettingsSearchQuery) ? Color.FromArgb(255, 130, 130, 136) : Color.FromArgb(255, 240, 240, 242));
 
-                // Filter the rail live as the user types
+                // Filter the rail live across tab names AND setting keywords
                 _visibleCats.Clear();
                 string query = (_state.SettingsSearchQuery ?? "").Trim();
                 foreach (var entry in Categories)
                 {
-                    if (query.Length == 0 || entry.Label.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (query.Length == 0 ||
+                        entry.Label.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        SearchKeywordsFor(entry.Cat).IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
                         _visibleCats.Add(entry);
+                    }
                 }
 
-                float navTop = 58.0f;
+                float navTop = 94.0f;
                 float navStep = Math.Clamp((LH - navTop - 16.0f) / Math.Max(1, _visibleCats.Count), 26.0f, 34.0f);
-                float navH = navStep - 4.0f;
+                float navH = navStep - 3.0f;
 
                 // Slide the highlight pill to the active row
                 int activeIndex = _visibleCats.FindIndex(c => c.Cat == _state.ActiveSettingsCat);
@@ -565,35 +729,41 @@ namespace OpenPixel.UI
 
                 if (activeIndex >= 0)
                 {
-                    var pill = new RectangleF(18, _navY, RailWidth - 26, navH);
-                    _renderer.FillRoundedRect(pill, 9, Color.FromArgb(26, 255, 255, 255));
-                    // Cyan/blue indicator dot on the right edge of the active rail pill
-                    _renderer.FillCircle(pill.Right - 10, pill.Y + navH * 0.5f, 2.4f, Color.FromArgb(255, 59, 130, 246));
+                    var pill = new RectangleF(12, _navY, RailWidth - 24, navH);
+                    Color activePillFill = theme.IsLight ? Color.FromArgb(22, 12, 12, 14) : Color.FromArgb(26, 255, 255, 255);
+                    _renderer.FillRoundedRect(pill, 8, activePillFill);
+                    // Small 4x4 square dot on the right edge of the active item (themed accent on soft/candy themes)
+                    Color dotCol = s.Theme == SurfaceTheme.CandyGlass ? Color.FromArgb(255, 255, 128, 184) : theme.TextPrimary;
+                    using var dotBrush = new SolidBrush(dotCol);
+                    _renderer.G.FillRectangle(dotBrush, pill.Right - 14.0f, pill.Y + (navH - 4.0f) * 0.5f, 4.0f, 4.0f);
                 }
 
                 for (int i = 0; i < _visibleCats.Count; ++i)
                 {
                     var (cat, label, icon) = _visibleCats[i];
                     float rowY = navTop + i * navStep;
-                    var row = new RectangleF(18, rowY, RailWidth - 26, navH);
+                    var row = new RectangleF(12, rowY, RailWidth - 24, navH);
                     bool hov = _renderer.IsHovered(row, _mouseX, _mouseY);
                     float hoverT = GetHover($"cat-{cat}", hov && cat != _state.ActiveSettingsCat);
-                    if (hoverT > 0.01f) _renderer.FillRoundedRect(row, 10, Color.FromArgb((int)(15 * hoverT), 255, 255, 255));
+                    if (hoverT > 0.01f) _renderer.FillRoundedRect(row, 8, Color.FromArgb((int)(16 * hoverT), 255, 255, 255));
 
                     bool active = cat == _state.ActiveSettingsCat;
                     float lift = active ? 0.0f : hoverT;
-                    Color rowText = active ? theme.TextPrimary : Mix(theme.TextMuted, theme.TextPrimary, lift);
-                    _renderer.DrawLucideIcon(icon, row.X + 17, row.Y + navH * 0.5f, 12.5f, rowText, 1.55f);
-                    _renderer.DrawTextStr(label, new RectangleF(row.X + 34, row.Y, row.Width - 42, navH), 11.5f, active, rowText);
+                    Color rowText = active
+                        ? Color.FromArgb(255, 245, 245, 247)
+                        : Mix(Color.FromArgb(255, 168, 168, 174), Color.FromArgb(255, 240, 240, 242), lift);
+                    DrawSidebarIcon(icon, row.X + 18, row.Y + navH * 0.5f, 12.5f, rowText);
+                    _renderer.DrawTextStr(label, new RectangleF(row.X + 36, row.Y, row.Width - 52, navH), 11.0f, active, rowText);
 
                     var capCat = cat;
                     _renderer.AddHitRegion($"cat-{i}", row, () =>
                     {
+                        _langDropdownOpen = false;
                         if (_state.ActiveSettingsCat == capCat) return;
                         _state.ActiveSettingsCat = capCat;
                         _scrollTarget = 0.0f;
                         _scrollShown = 0.0f;
-                        _contentFade = 0.0f;
+                        _contentFade = 1.0f;
                         _lastAnimMs = Environment.TickCount64;
                         _animTimer.Start();
                         RenderNow();
@@ -602,33 +772,30 @@ namespace OpenPixel.UI
 
                 if (_visibleCats.Count == 0)
                 {
-                    _renderer.DrawTextStr("No matches", new RectangleF(24, navTop, RailWidth - 36, 24), 11.0f, false, theme.TextFaint);
+                    _renderer.DrawTextStr("No matches", new RectangleF(20, navTop, RailWidth - 32, 24), 10.5f, false, Color.FromArgb(255, 120, 120, 126));
                 }
 
-                // Divider between rail and canvas
-                _renderer.FillRoundedRect(new RectangleF(RailWidth, 22, 1, LH - 44), 0.5f, hairline);
+                // Subtle vertical border between left rail and content
+                _renderer.DrawLine(RailWidth, TopBarHeight + 2, RailWidth, LH - 2, railDivider, 1.0f);
 
                 // ---- Content -------------------------------------------------
                 float paneX = ContentLeft;
-                float paneW = LW - paneX - 30.0f;
+                float paneW = LW - paneX - 32.0f;
                 if (paneW < 120.0f) paneW = 120.0f;
 
                 var contentTheme = FadedSurface(theme, _contentFade);
-                float fadeOffset = (1.0f - _contentFade) * 8.0f;
+                float fadeOffset = (1.0f - _contentFade) * 6.0f;
 
                 bool appearancePage = _state.ActiveSettingsCat == SettingsCategory.Appearance;
                 if (appearancePage)
-                    RenderAppearancePreview(paneX, Math.Max(160.0f, paneW - 48.0f), 12.0f, islandTheme, s);
+                    RenderAppearancePreview(paneX, Math.Max(160.0f, paneW - 48.0f), 54.0f, islandTheme, s);
 
                 var (_, titleLabel, _) = Array.Find(Categories, c => c.Cat == _state.ActiveSettingsCat);
-                float titleTop = appearancePage ? 154.0f : 20.0f;
-                float headerBottom = appearancePage ? 218.0f : HeaderBottom;
-                _renderer.DrawTextStr("SETTINGS", new RectangleF(paneX, titleTop - fadeOffset, 240, 14), 8.5f, true, contentTheme.TextFaint, mono: true);
-                _renderer.DrawTextStr(titleLabel ?? "Settings", new RectangleF(paneX, titleTop + 16 - fadeOffset, 360, 34), 21.0f, true, contentTheme.TextPrimary);
-                _renderer.DrawTextStr(SubtitleFor(_state.ActiveSettingsCat), new RectangleF(paneX, titleTop + 46 - fadeOffset, paneW, 16), 10.0f, false, contentTheme.TextFaint);
-                _renderer.FillRoundedRect(new RectangleF(paneX, headerBottom, paneW, 1), 0.5f, hairline);
+                float titleTop = appearancePage ? 190.0f : 54.0f;
+                float viewTop = appearancePage ? 256.0f : ViewTop;
+                _renderer.DrawTextStr("SETTINGS", new RectangleF(paneX, titleTop - fadeOffset, 240, 14), 8.2f, false, Color.FromArgb(255, 116, 116, 122), mono: true);
+                _renderer.DrawTextStr(titleLabel ?? "Settings", new RectangleF(paneX, titleTop + 16 - fadeOffset, 380, 36), 22.0f, true, Color.FromArgb(255, 245, 245, 247));
 
-                float viewTop = appearancePage ? 230.0f : ViewTop;
                 float viewBottom = LH - ViewBottomPad;
                 float viewH = Math.Max(40.0f, viewBottom - viewTop);
 
@@ -638,6 +805,9 @@ namespace OpenPixel.UI
                 float py = viewTop - _scrollShown + fadeOffset;
                 _viewTop = viewTop;
                 _viewBottom = viewBottom;
+                _langAnchorRect = RectangleF.Empty;
+                _wheelRect = RectangleF.Empty;
+                _valBarRect = RectangleF.Empty;
 
                 switch (_state.ActiveSettingsCat)
                 {
@@ -688,56 +858,108 @@ namespace OpenPixel.UI
                                 NotifyChanged();
                             });
                         Hairline(paneX + 16, cy, paneW - 32, hairline, contentTheme); cy += HairH;
-                        Segmented("Surface", "Liquid Glass is the default with live refraction", paneX + 16, ref cy, paneW - 32,
-                            new[] { "Liquid Glass", "Candy", "Acrylic", "OLED", "White" },
-                            s.Theme switch
-                            {
-                                SurfaceTheme.LiquidGlass => 0,
-                                SurfaceTheme.CandyGlass => 1,
-                                SurfaceTheme.Acrylic => 2,
-                                SurfaceTheme.PureBlack => 3,
-                                SurfaceTheme.PureWhite => 4,
-                                _ => -1
-                            }, "surface", contentTheme, idx =>
-                            {
-                                SurfaceTheme[] map = { SurfaceTheme.LiquidGlass, SurfaceTheme.CandyGlass, SurfaceTheme.Acrylic, SurfaceTheme.PureBlack, SurfaceTheme.PureWhite };
-                                _state.QueueTheme(map[idx]);
-                                _state.CommitPendingParametersOnRenderTick();
-                                NotifyChanged();
-                            });
-                        Segmented("Solid themes", "Black, Graphite and the four soft accents", paneX + 16, ref cy, paneW - 32,
-                            new[] { "Black", "Graphite", "Ros\u00E9", "Lavender", "Peach", "Sakura" },
-                            s.Theme switch
-                            {
-                                SurfaceTheme.Black => 0,
-                                SurfaceTheme.Graphite => 1,
-                                SurfaceTheme.Rose => 2,
-                                SurfaceTheme.Lavender => 3,
-                                SurfaceTheme.Peach => 4,
-                                SurfaceTheme.Sakura => 5,
-                                _ => -1
-                            }, "soft", contentTheme, idx =>
-                            {
-                                SurfaceTheme[] map = { SurfaceTheme.Black, SurfaceTheme.Graphite, SurfaceTheme.Rose, SurfaceTheme.Lavender, SurfaceTheme.Peach, SurfaceTheme.Sakura };
-                                _state.QueueTheme(map[idx]);
-                                _state.CommitPendingParametersOnRenderTick();
-                                NotifyChanged();
-                            });
+
+                        // Exact 11 Surface Theme pills in 2 rows matching image_8
+                        _renderer.DrawTextStr("Surface", new RectangleF(paneX + 16, cy, paneW - 32, 20), 11.4f, true, contentTheme.TextPrimary);
+                        cy += 22.0f;
+                        _renderer.DrawTextStr(
+                            "Glass bends and softly blurs what's behind the island; Graphite is a lighter black; Acrylic lets the desktop show through; Pure black is true OLED black. Ros\u00E9, Lavender, Peach, Sakura and Candy glass are soft themes.",
+                            new RectangleF(paneX + 16, cy, paneW - 32, 42), 9.4f, false, contentTheme.TextMuted, noWrap: false);
+                        cy += 46.0f;
+
+                        (string Label, SurfaceTheme Theme)[] row1Themes =
+                        {
+                            ("Black", SurfaceTheme.Black),
+                            ("Pure black", SurfaceTheme.PureBlack),
+                            ("Pure white", SurfaceTheme.PureWhite),
+                            ("Graphite", SurfaceTheme.Graphite),
+                            ("Glass", SurfaceTheme.LiquidGlass),
+                            ("Acrylic", SurfaceTheme.Acrylic)
+                        };
+                        (string Label, SurfaceTheme Theme)[] row2Themes =
+                        {
+                            ("Ros\u00E9", SurfaceTheme.Rose),
+                            ("Lavender", SurfaceTheme.Lavender),
+                            ("Peach", SurfaceTheme.Peach),
+                            ("Sakura", SurfaceTheme.Sakura),
+                            ("Candy glass", SurfaceTheme.CandyGlass)
+                        };
+
+                        var themeBox = new RectangleF(paneX + 16, cy, paneW - 32, 72.0f);
+                        _renderer.FillRoundedRect(themeBox, 12, Color.FromArgb(20, 255, 255, 255));
+                        _renderer.DrawRoundedRect(themeBox, 12, hairline, 1.0f);
+                        DrawThemePillRow(row1Themes, themeBox.X + 6, themeBox.Y + 6, themeBox.Width - 12, s.Theme, contentTheme, chosen =>
+                        {
+                            _state.QueueTheme(chosen);
+                            _state.CommitPendingParametersOnRenderTick();
+                            AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                            NotifyChanged();
+                        });
+                        DrawThemePillRow(row2Themes, themeBox.X + 6, themeBox.Y + 38, themeBox.Width - 12, s.Theme, contentTheme, chosen =>
+                        {
+                            _state.QueueTheme(chosen);
+                            _state.CommitPendingParametersOnRenderTick();
+                            AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                            NotifyChanged();
+                        });
+                        cy += 82.0f;
+
+                        // Glass blur slider (0%-100%, default 50%)
+                        int blurPct = Math.Clamp((int)MathF.Round((s.GlassBlurRadius / 40.0f) * 100.0f), 0, 100);
+                        Slider("Glass blur", $"{blurPct}%", paneX + 16, ref cy, paneW - 32, blurPct / 100.0f, "blur", contentTheme, n =>
+                        {
+                            _state.QueueBlurRadius(n * 40.0f);
+                            _state.CommitPendingParametersOnRenderTick();
+                            AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                            NotifyChanged();
+                        });
+
+                        // Accent color picker
                         AccentPalette(paneX + 16, ref cy, paneW - 32, contentTheme, s.AccentColorArgb, argb =>
                         {
                             s.AccentColorArgb = argb;
+                            AuxiliaryWindows.UpdateBottomTaskbar(_state);
                             NotifyChanged();
                         });
+
+                        // Font selector (6 fonts: Geist default, Inter, Roboto, Noto Sans, Manrope, Nunito)
+                        _renderer.DrawTextStr("Font", new RectangleF(paneX + 16, cy + 4, paneW - 32, 20), 11.4f, true, contentTheme.TextPrimary);
+                        cy += 24.0f;
+                        _renderer.DrawTextStr(
+                            "The letters the island, the taskbar and this window write in. Every one writes all of NotchPixel's languages; numbers keep their own even-width font.",
+                            new RectangleF(paneX + 16, cy, paneW - 32, 34), 9.4f, false, contentTheme.TextMuted, noWrap: false);
+                        cy += 38.0f;
+                        var fontBox = new RectangleF(paneX + 16, cy, Math.Min(paneW - 32, 360.0f), 68.0f);
+                        _renderer.FillRoundedRect(fontBox, 12, Color.FromArgb(20, 255, 255, 255));
+                        _renderer.DrawRoundedRect(fontBox, 12, hairline, 1.0f);
+                        DrawFontPillRow(new[] { (0, "Geist"), (1, "Inter"), (2, "Roboto"), (3, "Noto Sans") },
+                            fontBox.X + 6, fontBox.Y + 6, s.FontIndex, contentTheme, idx =>
+                            {
+                                s.FontIndex = idx;
+                                UiFonts.EnsureFontAvailable(idx, () =>
+                                {
+                                    try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => { RenderNow(); _onSettingsChanged?.Invoke(); })); } catch { }
+                                });
+                                AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                                NotifyChanged();
+                            });
+                        DrawFontPillRow(new[] { (4, "Manrope"), (5, "Nunito") },
+                            fontBox.X + 6, fontBox.Y + 36, s.FontIndex, contentTheme, idx =>
+                            {
+                                s.FontIndex = idx;
+                                UiFonts.EnsureFontAvailable(idx, () =>
+                                {
+                                    try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => { RenderNow(); _onSettingsChanged?.Invoke(); })); } catch { }
+                                });
+                                AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                                NotifyChanged();
+                            });
+                        cy += 78.0f;
+
                         Segmented("Card background", "Use album colours or a plain surface", paneX + 16, ref cy, paneW - 32,
                             new[] { "Album art", "Plain" }, (int)s.CardBackground, "cardbackground", contentTheme,
                             idx => { s.CardBackground = (CardBackgroundMode)idx; NotifyChanged(); });
                         Hairline(paneX + 16, cy, paneW - 32, hairline, contentTheme); cy += HairH;
-                        Slider("Liquid Glass blur", $"{(int)s.GlassBlurRadius} px", paneX + 16, ref cy, paneW - 32, s.GlassBlurRadius / 40.0f, "blur", contentTheme, n =>
-                        {
-                            _state.QueueBlurRadius(n * 40.0f);
-                            _state.CommitPendingParametersOnRenderTick();
-                            NotifyChanged();
-                        });
                         Slider("Corners", $"{(int)(s.CornerRadiusScale * 100)}%", paneX + 16, ref cy, paneW - 32, (s.CornerRadiusScale - 0.15f) / 0.85f, "corners", contentTheme, n =>
                         {
                             _state.QueueCornerRadiusScale(0.15f + n * 0.85f);
@@ -797,27 +1019,173 @@ namespace OpenPixel.UI
 
                     case SettingsCategory.General:
                     {
-                        Section("STARTUP", paneX, ref py, contentTheme);
-                        ToggleCard("Launch at Windows startup", "Start quietly in the notification area", paneX, ref py, paneW,
-                            s.LaunchAtStartup, "startup", cardBg, hairline, contentTheme, () =>
+                        Section("LANGUAGE", paneX, ref py, contentTheme);
+                        {
+                            float leftW = paneW - 220.0f;
+                            _renderer.DrawTextStr("Language", new RectangleF(paneX, py + 4, leftW, 20), 11.4f, true, contentTheme.TextPrimary);
+                            _renderer.DrawTextStr("The island, its notices and this window. Changes apply straight away.",
+                                new RectangleF(paneX, py + 26, leftW, 34), 9.6f, false, contentTheme.TextMuted, noWrap: false);
+
+                            float ddW = 204.0f;
+                            var ddRect = new RectangleF(paneX + paneW - ddW, py + 12, ddW, 34);
+                            _langAnchorRect = ddRect;
+                            float ddHov = GetHover("gen-lang", _renderer.IsHovered(ddRect, _mouseX, _mouseY) || _langDropdownOpen);
+                            _renderer.FillRoundedRect(ddRect, 8, Mix(Color.FromArgb(255, 16, 16, 18), Color.FromArgb(255, 24, 24, 28), ddHov));
+                            _renderer.DrawRoundedRect(ddRect, 8, Mix(Color.FromArgb(255, 44, 44, 48), Color.FromArgb(255, 76, 76, 82), ddHov), 1.0f);
+                            _renderer.DrawTextStr(GetLanguageDisplayLabel(s.Language),
+                                new RectangleF(ddRect.X + 12, ddRect.Y, ddRect.Width - 34, ddRect.Height), 10.2f, false, contentTheme.TextPrimary);
+                            DrawChevronDown(ddRect.Right - 16, ddRect.Y + ddRect.Height * 0.5f, Color.FromArgb(255, 164, 164, 170));
+                            if (ControlVisible(ddRect))
+                            {
+                                _renderer.AddHitRegion("gen-lang", ddRect, () =>
+                                {
+                                    _langDropdownOpen = !_langDropdownOpen;
+                                    RenderNow();
+                                });
+                            }
+                            py += 70.0f;
+                            _renderer.DrawLine(paneX, py, paneX + paneW, py, Color.FromArgb(255, 30, 30, 32), 1.0f);
+                            py += 20.0f;
+                        }
+
+                        Section("GENERAL", paneX, ref py, contentTheme);
+                        FlatToggleRow(
+                            "Run at startup",
+                            "Start NotchPixel when you sign in to Windows.",
+                            paneX, ref py, paneW, s.LaunchAtStartup, "startup", contentTheme, 58.0f, true,
+                            () =>
                             {
                                 s.LaunchAtStartup = !s.LaunchAtStartup;
                                 ConfigManager.ApplyLaunchAtStartup(s.LaunchAtStartup);
                                 NotifyChanged();
                             });
 
-                        Section("PERFORMANCE", paneX, ref py, contentTheme);
-                        ToggleCard("Draw with the processor", "CPU fallback for unsupported GPU drivers", paneX, ref py, paneW,
-                            s.DrawWithProcessor, "cpu", cardBg, hairline, contentTheme,
-                            () => { s.DrawWithProcessor = !s.DrawWithProcessor; NotifyChanged(); });
-                        ToggleCard("Pause effects on battery", "Stops ambient theme motion while on battery power", paneX, ref py, paneW,
-                            s.PauseEffectsOnBattery, "batteryfx", cardBg, hairline, contentTheme,
-                            () => { s.PauseEffectsOnBattery = !s.PauseEffectsOnBattery; NotifyChanged(); });
+                        FlatToggleRow(
+                            "Slim strip under maximized windows",
+                            "Collapse to a thin line so the island never covers browser tabs. Rest the cursor on it to open.",
+                            paneX, ref py, paneW, s.SlimStripUnderMaximized, "slimmax", contentTheme, 70.0f, true,
+                            () =>
+                            {
+                                s.SlimStripUnderMaximized = !s.SlimStripUnderMaximized;
+                                NotifyChanged();
+                            });
 
-                        Section("INPUT", paneX, ref py, contentTheme);
-                        ToggleCard("Reverse scrolling", "Invert the wheel direction in the island and settings", paneX, ref py, paneW,
-                            s.ReverseScrolling, "reversescroll", cardBg, hairline, contentTheme,
-                            () => { s.ReverseScrolling = !s.ReverseScrolling; NotifyChanged(); });
+                        // When the island opens (Last tab | Music)
+                        {
+                            float rowH = 92.0f;
+                            float segW = 148.0f;
+                            float leftW = paneW - segW - 20.0f;
+                            _renderer.DrawTextStr("When the island opens", new RectangleF(paneX, py + 6, leftW, 20), 11.4f, true, contentTheme.TextPrimary);
+                            _renderer.DrawTextStr(
+                                "Last tab opens the card on the tab you were on when it closed, even after a restart. Music always opens on the music card, or on the widgets while nothing is playing. A tab you have turned off is skipped.",
+                                new RectangleF(paneX, py + 28, leftW, 56), 9.5f, false, contentTheme.TextMuted, noWrap: false);
+
+                            var trackRect = new RectangleF(paneX + paneW - segW, py + 26, segW, 30);
+                            _renderer.FillRoundedRect(trackRect, 15, Color.FromArgb(255, 16, 16, 18));
+                            _renderer.DrawRoundedRect(trackRect, 15, Color.FromArgb(255, 42, 42, 46), 1.0f);
+                            int openIdx = s.ReopenOnLastTab ? 0 : 1;
+                            float anim = GetSeg("openmode", openIdx);
+                            float btnW = (segW - 6.0f) * 0.5f;
+                            float pillX = trackRect.X + 3.0f + Math.Clamp(anim, 0.0f, 1.0f) * btnW;
+                            _renderer.FillRoundedRect(new RectangleF(pillX, trackRect.Y + 3.0f, btnW, 24.0f), 12, Color.FromArgb(255, 237, 237, 237));
+                            string[] openItems = { "Last tab", "Music" };
+                            for (int i = 0; i < 2; ++i)
+                            {
+                                var r = new RectangleF(trackRect.X + 3.0f + i * btnW, trackRect.Y + 3.0f, btnW, 24.0f);
+                                bool act = i == openIdx;
+                                _renderer.DrawTextStr(openItems[i], r, 9.6f, act, act ? Color.FromArgb(255, 16, 16, 18) : Color.FromArgb(255, 205, 205, 210), hAlign: StringAlignment.Center);
+                                int cap = i;
+                                if (ControlVisible(r))
+                                {
+                                    _renderer.AddHitRegion($"openmode-{i}", r, () =>
+                                    {
+                                        _segTarget["openmode"] = cap;
+                                        s.ReopenOnLastTab = cap == 0;
+                                        NotifyChanged();
+                                    });
+                                }
+                            }
+                            py += rowH;
+                            _renderer.DrawLine(paneX, py, paneX + paneW, py, Color.FromArgb(255, 30, 30, 32), 1.0f);
+                            py += 8.0f;
+                        }
+
+                        FlatToggleRow(
+                            "Draw with the processor",
+                            "If a black box shows around the island, or it flickers, your graphics card's driver is the likely cause: the processor draws NotchPixel instead. It uses a little more of the processor. Takes effect the next time NotchPixel starts (quit it from the tray and open it again).",
+                            paneX, ref py, paneW, s.DrawWithProcessor, "cpu", contentTheme, 96.0f, true,
+                            () => { s.DrawWithProcessor = !s.DrawWithProcessor; NotifyChanged(); });
+                        break;
+                    }
+
+                    case SettingsCategory.Taskbar:
+                    {
+                        Section("NOTCHPIXEL TASKBAR", paneX, ref py, contentTheme);
+                        FlatToggleRow(
+                            "NotchPixel taskbar",
+                            "A notch along the bottom of your main screen in place of Windows' taskbar, in the island's look: Start, your pinned and open apps, the song playing and the timer, the tray, quick settings and the clock. Right-click an app to pin it. Windows' taskbar comes back as it was when you turn this off or NotchPixel closes.",
+                            paneX, ref py, paneW, s.BottomTaskbarEnabled, "tb-master", contentTheme, 108.0f, true,
+                            () =>
+                            {
+                                s.BottomTaskbarEnabled = !s.BottomTaskbarEnabled;
+                                AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                                NotifyChanged();
+                            });
+
+                        bool tbOn = s.BottomTaskbarEnabled;
+                        FlatToggleRow(
+                            "On every screen",
+                            "A taskbar along the bottom of each screen, with Start, your apps, the song, the timer, quick settings and the clock. The tray icons stay on the main screen's.",
+                            paneX, ref py, paneW, s.TaskbarMultiMonitor, "tb-every", contentTheme, 74.0f, tbOn,
+                            () =>
+                            {
+                                s.TaskbarMultiMonitor = !s.TaskbarMultiMonitor;
+                                AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                                NotifyChanged();
+                            });
+
+                        FlatToggleRow(
+                            "Each screen's own apps",
+                            "Each taskbar shows the apps open on its own screen, with your pins on all of them, and an app started from one opens on its screen. Off, every taskbar shows every app, as Windows' does.",
+                            paneX, ref py, paneW, s.TaskbarPerScreenApps, "tb-perscreen", contentTheme, 82.0f, tbOn,
+                            () =>
+                            {
+                                s.TaskbarPerScreenApps = !s.TaskbarPerScreenApps;
+                                AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                                NotifyChanged();
+                            });
+
+                        FlatToggleRow(
+                            "Hide over maximized windows",
+                            "Maximized windows get the whole screen, and NotchPixel's taskbar steps aside while one is in front. Push the pointer to the bottom edge to bring it back. Off, windows stop above the taskbar.",
+                            paneX, ref py, paneW, s.TaskbarAutoHideMaximized, "tb-autohide", contentTheme, 82.0f, tbOn,
+                            () =>
+                            {
+                                s.TaskbarAutoHideMaximized = !s.TaskbarAutoHideMaximized;
+                                AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                                NotifyChanged();
+                            });
+
+                        FlatToggleRow(
+                            "Window previews",
+                            "Rest the pointer on an app to see each of its windows live, with its title. Click one to bring it forward, or close it with its X. Clicking an app with several windows shows them so you can choose. Off, a label names the app and a click goes to its next window.",
+                            paneX, ref py, paneW, s.TaskbarLiveHoverPreviews, "tb-previews", contentTheme, 96.0f, tbOn,
+                            () =>
+                            {
+                                s.TaskbarLiveHoverPreviews = !s.TaskbarLiveHoverPreviews;
+                                AuxiliaryWindows.UpdateBottomTaskbar(_state);
+                                NotifyChanged();
+                            });
+
+                        FlatToggleRow(
+                            "Windows key + number opens the taskbar's apps",
+                            "Win+1 to Win+9, and Win+0, bring forward the app at that place on NotchPixel's taskbar.",
+                            paneX, ref py, paneW, s.TaskbarWinNumberHotkeys, "tb-winnum", contentTheme, 68.0f, tbOn,
+                            () =>
+                            {
+                                s.TaskbarWinNumberHotkeys = !s.TaskbarWinNumberHotkeys;
+                                NotifyChanged();
+                            });
                         break;
                     }
 
@@ -854,68 +1222,174 @@ namespace OpenPixel.UI
                         ToggleCard("Reopen onto the last-viewed tab", "Otherwise always collapses onto Music", paneX, ref py, paneW,
                             s.ReopenOnLastTab, "lasttab", cardBg, hairline, contentTheme,
                             () => { s.ReopenOnLastTab = !s.ReopenOnLastTab; NotifyChanged(); });
+                        ToggleCard("Notifications in the island", "New notifications appear in the island and stay in one list", paneX, ref py, paneW,
+                            s.NotificationsInIsland, "notifisland", cardBg, hairline, contentTheme,
+                            () => { s.NotificationsInIsland = !s.NotificationsInIsland; NotifyChanged(); });
                         ToggleCard("Clock timestamps in notifications", "Show 14:32 instead of relative time", paneX, ref py, paneW,
                             s.ClockTimestampsInNotifications, "timestamps", cardBg, hairline, contentTheme,
                             () => { s.ClockTimestampsInNotifications = !s.ClockTimestampsInNotifications; NotifyChanged(); });
+                        ToggleCard("Volume in the island", "Show volume level in the island popup", paneX, ref py, paneW,
+                            s.VolumeInIsland, "volisland", cardBg, hairline, contentTheme,
+                            () => { s.VolumeInIsland = !s.VolumeInIsland; NotifyChanged(); });
+                        ToggleCard("Clipboard history", "Remember what you copy so you can paste it again locally", paneX, ref py, paneW,
+                            s.ClipboardHistoryEnabled, "cliphist", cardBg, hairline, contentTheme,
+                            () => { s.ClipboardHistoryEnabled = !s.ClipboardHistoryEnabled; NotifyChanged(); });
                         break;
                     }
 
                     case SettingsCategory.Widgets:
                     {
-                        Section("DESKTOP WIDGETS", paneX, ref py, contentTheme);
-                        ToggleCard("24-hour clock", "Applies to the island, taskbar and every widget", paneX, ref py, paneW,
-                            s.Use24HourClock, "clock24", cardBg, hairline, contentTheme,
-                            () => { s.Use24HourClock = !s.Use24HourClock; NotifyChanged(); });
-                        ToggleCard("Lock widgets in place", "Right-click any widget to unlock, recolour or unpin", paneX, ref py, paneW,
-                            s.LockDesktopWidgets, "lockwidgets", cardBg, hairline, contentTheme,
-                            () => { s.LockDesktopWidgets = !s.LockDesktopWidgets; NotifyChanged(); });
-
-                        Section("ADD A WIDGET", paneX, ref py, contentTheme);
-                        float pinH = CardHeight(SegH);
-                        Card(py, pinH, paneX, paneW, cardBg, hairline);
-                        float cy = py + 14.0f;
-                        Segmented("Pin widget", "Places a glass widget on the desktop", paneX + 16, ref cy, paneW - 32,
-                            new[] { "Day Clock", "Analog", "To-Do", "Weather", "Calendar", "PC Stats", "Stocks" }, -1, "pinwidget", contentTheme, idx =>
+                        Section("DAY CLOCK", paneX, ref py, contentTheme);
+                        bool dayClockPinned = AuxiliaryWindows.IsDesktopWidgetPinned(_state, WidgetType.DayClock);
+                        FlatToggleRow(
+                            "Day clock on the desktop",
+                            "The day, date and time in big spaced letters on your wallpaper, with nothing behind them. Drag it to move it; scroll on it or right-click it to resize it and change its colour.",
+                            paneX, ref py, paneW, dayClockPinned, "dayclock-on", contentTheme, 82.0f, true,
+                            () =>
                             {
-                                WidgetType[] map =
-                                {
-                                    WidgetType.DayClock, WidgetType.AnalogClock, WidgetType.TodoList,
-                                    WidgetType.MinimalWeather, WidgetType.Calendar, WidgetType.PcStats, WidgetType.StockPrices
-                                };
-                                AuxiliaryWindows.ToggleDesktopWidget(_state, map[idx]);
-                            });
-                        py += pinH + 20.0f;
-
-                        Section("WIDGET SOURCES", paneX, ref py, contentTheme);
-                        float srcH = 88.0f;
-                        Card(py, srcH, paneX, paneW, cardBg, hairline);
-                        string photos = string.IsNullOrEmpty(s.PhotosFolder) ? "Pictures folder (default)" : s.PhotosFolder;
-                        _renderer.DrawTextStr("Photos: " + photos, new RectangleF(paneX + 16, py + 10, paneW - 32, 18), 9.5f, false, contentTheme.TextMuted);
-                        SmallButton("Photos folder\u2026", paneX + 16, py + 34, 150, contentTheme, () =>
-                        {
-                            using var dialog = new FolderBrowserDialog { Description = "Choose a folder of photos" };
-                            if (dialog.ShowDialog() == DialogResult.OK)
-                            {
-                                s.PhotosFolder = dialog.SelectedPath;
+                                AuxiliaryWindows.ToggleDesktopWidget(_state, WidgetType.DayClock);
+                                AuxiliaryWindows.ApplyDayClockSettings(_state);
                                 NotifyChanged();
-                            }
-                        });
-                        SmallButton("Stock symbols\u2026", paneX + 174, py + 34, 150, contentTheme, () =>
+                            });
+
+                        // Size slider (50% - 200%, default 100%)
+                        int dcScale = Math.Clamp(s.DayClockScalePercent, 50, 200);
+                        FlatSliderRow("Size", null, $"{dcScale}%", paneX, ref py, paneW, (dcScale - 50.0f) / 150.0f, "dc-size", contentTheme, n =>
                         {
-                            string current = string.Join(",", s.StockSymbols ?? new System.Collections.Generic.List<string>());
-                            string entered = TextPromptForm.Ask("Stock symbols", "Comma-separated tickers, e.g. AAPL, MSFT, NVDA", current);
-                            if (entered == null) return;
-                            s.StockSymbols = new System.Collections.Generic.List<string>();
-                            foreach (string raw in entered.Split(','))
-                            {
-                                string symbol = raw.Trim().ToUpperInvariant();
-                                if (symbol.Length > 0 && !s.StockSymbols.Contains(symbol)) s.StockSymbols.Add(symbol);
-                            }
-                            if (s.StockSymbols.Count == 0) s.StockSymbols.Add("AAPL");
-                            StockQuotes.Refresh(s.StockSymbols);
+                            s.DayClockScalePercent = Math.Clamp((int)MathF.Round(50.0f + n * 150.0f), 50, 200);
+                            AuxiliaryWindows.ApplyDayClockSettings(_state);
                             NotifyChanged();
                         });
-                        py += srcH + 20.0f;
+
+                        // Colour wheel + brightness bar + hex readout
+                        RenderDayClockColorWheelRow(paneX, ref py, paneW, s, contentTheme);
+
+                        py += 16.0f;
+                        Section("WIDGETS", paneX, ref py, contentTheme);
+                        s.IslandWidgets ??= new List<string> { "calendar", "focus", "weather", "stats" };
+                        _renderer.DrawTextStr(
+                            $"{s.IslandWidgets.Count} of 4 on the island. Click to add or remove; they show in the order you add them.",
+                            new RectangleF(paneX, py, paneW, 22), 10.0f, false, contentTheme.TextMuted);
+                        py += 28.0f;
+
+                        RenderIslandWidgetCardsGrid(paneX, ref py, paneW, s, contentTheme);
+                        break;
+                    }
+
+                    case SettingsCategory.Wallpaper:
+                    {
+                        Section("LIVE WALLPAPER", paneX, ref py, contentTheme);
+                        FlatToggleRow(
+                            "Play a live wallpaper",
+                            "A video of your own plays behind the desktop icons. It plays only while you can see the desktop, on battery too: it pauses under windows and in games, and lets its memory go when nobody has seen it for a minute.",
+                            paneX, ref py, paneW, s.LiveVideoWallpaperEnabled, "wp-play", contentTheme, 92.0f, true,
+                            () =>
+                            {
+                                s.LiveVideoWallpaperEnabled = !s.LiveVideoWallpaperEnabled;
+                                AuxiliaryWindows.UpdateLiveVideoWallpaper(_state);
+                                NotifyChanged();
+                            });
+
+                        // Video file picker row
+                        {
+                            float leftW = paneW - 256.0f;
+                            _renderer.DrawTextStr("Video", new RectangleF(paneX, py + 6, leftW, 20), 11.4f, true, contentTheme.TextPrimary);
+                            _renderer.DrawTextStr(
+                                "MP4, MOV, MKV, WebM, WMV or AVI from your own files. It plays without sound, decoded by the graphics card. A video the size of your screen, at 30 frames a second, costs the least.",
+                                new RectangleF(paneX, py + 28, leftW, 56), 9.5f, false, contentTheme.TextMuted, noWrap: false);
+
+                            string fileLabel = string.IsNullOrWhiteSpace(s.LiveVideoWallpaperPath)
+                                ? "No video chosen"
+                                : Path.GetFileName(s.LiveVideoWallpaperPath);
+                            var btnRect = new RectangleF(paneX + paneW - 134, py + 28, 134, 30);
+                            _renderer.DrawTextStr(fileLabel, new RectangleF(btnRect.X - 118, py + 33, 110, 20), 9.6f, false, contentTheme.TextMuted, hAlign: StringAlignment.Far);
+
+                            float btnHov = GetHover("wp-choose", _renderer.IsHovered(btnRect, _mouseX, _mouseY));
+                            _renderer.FillRoundedRect(btnRect, 15, Mix(Color.FromArgb(255, 16, 16, 18), Color.FromArgb(255, 28, 28, 32), btnHov));
+                            _renderer.DrawRoundedRect(btnRect, 15, Mix(Color.FromArgb(255, 48, 48, 54), Color.FromArgb(255, 84, 84, 92), btnHov), 1.0f);
+                            _renderer.DrawTextStr("Choose a video...", btnRect, 9.8f, true, contentTheme.TextPrimary, hAlign: StringAlignment.Center);
+                            if (ControlVisible(btnRect))
+                            {
+                                _renderer.AddHitRegion("wp-choose", btnRect, () =>
+                                {
+                                    using var dialog = new OpenFileDialog
+                                    {
+                                        Title = "Choose a video wallpaper",
+                                        Filter = "Video files (*.mp4;*.mov;*.mkv;*.webm;*.wmv;*.avi)|*.mp4;*.mov;*.mkv;*.webm;*.wmv;*.avi|All files (*.*)|*.*",
+                                        CheckFileExists = true
+                                    };
+                                    if (dialog.ShowDialog() == DialogResult.OK)
+                                    {
+                                        s.LiveVideoWallpaperPath = dialog.FileName;
+                                        s.LiveVideoWallpaperEnabled = true;
+                                        AuxiliaryWindows.UpdateLiveVideoWallpaper(_state);
+                                        NotifyChanged();
+                                        RenderNow();
+                                    }
+                                });
+                            }
+
+                            py += 92.0f;
+                            _renderer.DrawLine(paneX, py, paneX + paneW, py, Color.FromArgb(255, 30, 30, 32), 1.0f);
+                            py += 12.0f;
+
+                            string status = !s.LiveVideoWallpaperEnabled
+                                ? "Off."
+                                : string.IsNullOrWhiteSpace(s.LiveVideoWallpaperPath)
+                                    ? "Ready — choose a video to start."
+                                    : $"Playing {Path.GetFileName(s.LiveVideoWallpaperPath)}.";
+                            _renderer.DrawTextStr(status, new RectangleF(paneX, py, paneW, 20), 9.6f, false, contentTheme.TextMuted);
+                            py += 36.0f;
+                        }
+
+                        Section("COLOURS", paneX, ref py, contentTheme);
+                        float hueDeg = Math.Clamp(s.WallpaperHue, -180.0f, 180.0f);
+                        FlatSliderRow(
+                            "Hue",
+                            "Turns every colour of the video around the colour wheel: 180 makes blue orange.",
+                            $"{(int)MathF.Round(hueDeg)}\u00B0",
+                            paneX, ref py, paneW, (hueDeg + 180.0f) / 360.0f, "wp-hue", contentTheme, n =>
+                            {
+                                s.WallpaperHue = MathF.Round(-180.0f + n * 360.0f);
+                                AuxiliaryWindows.UpdateLiveVideoWallpaper(_state);
+                                NotifyChanged();
+                            });
+
+                        float satPct = Math.Clamp(s.WallpaperSaturation, 0.0f, 200.0f);
+                        FlatSliderRow(
+                            "Saturation",
+                            "Less colour to the left, more to the right. 100 is the video as it was made.",
+                            $"{(int)MathF.Round(satPct)}%",
+                            paneX, ref py, paneW, satPct / 200.0f, "wp-sat", contentTheme, n =>
+                            {
+                                s.WallpaperSaturation = MathF.Round(n * 200.0f);
+                                AuxiliaryWindows.UpdateLiveVideoWallpaper(_state);
+                                NotifyChanged();
+                            });
+
+                        float brightOffset = Math.Clamp(s.WallpaperBrightness - 100.0f, -100.0f, 100.0f);
+                        FlatSliderRow(
+                            "Brightness",
+                            "Darker below 0, lighter above it.",
+                            $"{(int)MathF.Round(brightOffset)}",
+                            paneX, ref py, paneW, (brightOffset + 100.0f) / 200.0f, "wp-bright", contentTheme, n =>
+                            {
+                                s.WallpaperBrightness = Math.Clamp(MathF.Round(n * 200.0f), 0.0f, 200.0f);
+                                AuxiliaryWindows.UpdateLiveVideoWallpaper(_state);
+                                NotifyChanged();
+                            });
+
+                        float contrastPct = Math.Clamp(s.WallpaperContrast, 0.0f, 200.0f);
+                        FlatSliderRow(
+                            "Contrast",
+                            "Lower softens highlights and shadows; 100 is original contrast.",
+                            $"{(int)MathF.Round(contrastPct)}%",
+                            paneX, ref py, paneW, contrastPct / 200.0f, "wp-contrast", contentTheme, n =>
+                            {
+                                s.WallpaperContrast = MathF.Round(n * 200.0f);
+                                AuxiliaryWindows.UpdateLiveVideoWallpaper(_state);
+                                NotifyChanged();
+                            });
                         break;
                     }
 
@@ -1219,13 +1693,17 @@ namespace OpenPixel.UI
                             WindowsSystemHooks.SaveDiagnosticReportToDesktop(_state);
                             NotifyChanged();
                         });
+                        if (_onOpenOnboarding != null)
+                        {
+                            SmallButton("Run welcome setup", paneX + 228, cy, 160, contentTheme, () => _onOpenOnboarding());
+                        }
                         py += aboutH + 16.0f;
                         break;
                     }
                 }
 
-                float contentBottom = py;
-                _maxScroll = Math.Max(0.0f, contentBottom - (viewBottom - 8.0f));
+                float totalContentBottom = py + _scrollShown - fadeOffset;
+                _maxScroll = Math.Max(0.0f, totalContentBottom - (viewBottom - 28.0f));
                 if (_scrollTarget > _maxScroll) _scrollTarget = _maxScroll;
                 _renderer.G.Restore(clipState);
 
@@ -1238,6 +1716,12 @@ namespace OpenPixel.UI
                     float thumbY = trackTop + (trackH - thumbH) * (_maxScroll <= 0.0f ? 0.0f : Math.Clamp(_scrollShown / _maxScroll, 0.0f, 1.0f));
                     _renderer.FillRoundedRect(new RectangleF(LW - 12, thumbY, 3.0f, thumbH), 1.5f,
                         Color.FromArgb((int)(90 * Math.Max(_scrollBarFade, 0.35f)), 255, 255, 255));
+                }
+
+                // Floating language dropdown menu (rendered above clip)
+                if (_langDropdownOpen && _state.ActiveSettingsCat == SettingsCategory.General && !_langAnchorRect.IsEmpty)
+                {
+                    RenderLanguageDropdownPopup(_langAnchorRect);
                 }
 
                 _renderer.EndLayeredFrame(Handle, Location, (byte)Math.Clamp((int)MathF.Round(254.0f * _windowReveal), 0, 254));
@@ -1470,8 +1954,644 @@ namespace OpenPixel.UI
         // --------------------------------------------------------------------
         private void Section(string title, float x, ref float y, ThemeSpec theme)
         {
-            _renderer.DrawTextStr(title, new RectangleF(x + 2, y, 320, 14), 8.8f, true, theme.TextFaint, mono: true);
-            y += 24.0f;
+            _renderer.DrawTextStr(title, new RectangleF(x, y, 360, 14), 8.2f, false, Color.FromArgb(255, 118, 118, 124), mono: true);
+            y += 18.0f;
+            _renderer.DrawLine(x, y, x + (LogicalWidth - ContentLeft - 32.0f), y, Color.FromArgb(255, 30, 30, 32), 1.0f);
+            y += 10.0f;
+        }
+
+        private void FlatToggleRow(
+            string title, string sub, float x, ref float y, float w,
+            bool value, string key, ThemeSpec theme, float rowH, bool enabled, Action onToggle)
+        {
+            var row = new RectangleF(x, y, w, rowH);
+            float hover = enabled ? GetHover($"ftog-{key}", _renderer.IsHovered(row, _mouseX, _mouseY)) : 0.0f;
+            if (!enabled)
+            {
+                _renderer.FillRoundedRect(new RectangleF(x, y + 2, w, rowH - 10), 6, Color.FromArgb(255, 19, 19, 21));
+            }
+            Color titleCol = enabled ? Color.FromArgb(255, 245, 245, 247) : Color.FromArgb(255, 128, 128, 134);
+            Color subCol = enabled ? Color.FromArgb(255, 152, 152, 158) : Color.FromArgb(255, 92, 92, 98);
+
+            float textW = w - 74.0f;
+            _renderer.DrawTextStr(title, new RectangleF(x + (enabled ? 0 : 8), y + 6, textW, 20), 11.2f, true, titleCol);
+            _renderer.DrawTextStr(sub, new RectangleF(x + (enabled ? 0 : 8), y + 28, textW, Math.Max(20.0f, rowH - 36.0f)), 9.5f, false, subCol, noWrap: false);
+
+            const float swW = 46.0f;
+            const float swH = 26.0f;
+            float swX = x + w - swW - (enabled ? 0 : 6);
+            float swY = y + Math.Min(20.0f, (rowH - swH) * 0.42f);
+            DrawSwitch(swX, swY, swW, swH, GetToggle(key, value), hover, theme, enabled);
+
+            if (enabled && ControlVisible(row))
+            {
+                _renderer.AddHitRegion($"ftog-{key}", row, () =>
+                {
+                    onToggle();
+                    _toggleTarget[key] = !value ? 1.0f : 0.0f;
+                });
+            }
+
+            y += rowH;
+            _renderer.DrawLine(x, y, x + w, y, Color.FromArgb(255, 30, 30, 32), 1.0f);
+            y += 8.0f;
+        }
+
+        private void FlatSliderRow(
+            string title, string sub, string valueText, float x, ref float y, float w,
+            float norm01, string key, ThemeSpec theme, Action<float> onSlide)
+        {
+            bool hasSub = !string.IsNullOrEmpty(sub);
+            float rowH = hasSub ? 66.0f : 44.0f;
+            float leftW = hasSub ? w * 0.48f : 150.0f;
+
+            _renderer.DrawTextStr(title, new RectangleF(x, y + (hasSub ? 6 : 10), leftW, 20), 11.2f, true, Color.FromArgb(255, 245, 245, 247));
+            if (hasSub)
+            {
+                _renderer.DrawTextStr(sub, new RectangleF(x, y + 28, leftW, 34), 9.4f, false, Color.FromArgb(255, 152, 152, 158), noWrap: false);
+            }
+
+            float valW = 54.0f;
+            float trackX = x + leftW + 18.0f;
+            float trackW = Math.Max(80.0f, w - leftW - valW - 28.0f);
+            float trackY = y + (hasSub ? 28.0f : 20.0f);
+
+            var track = new RectangleF(trackX, trackY, trackW, 4.0f);
+            _renderer.FillRoundedRect(track, 2.0f, Color.FromArgb(255, 44, 44, 48));
+            float fill = Math.Clamp(norm01, 0.0f, 1.0f);
+            if (fill > 0.001f)
+            {
+                _renderer.FillRoundedRect(new RectangleF(track.X, track.Y, Math.Max(4.0f, track.Width * fill), 4.0f), 2.0f, Color.FromArgb(255, 237, 237, 237));
+            }
+
+            float thumbCx = track.X + track.Width * fill;
+            float thumbCy = track.Y + 2.0f;
+            _renderer.FillCircle(thumbCx, thumbCy, 7.0f, Color.FromArgb(255, 245, 245, 247));
+            _renderer.DrawTextStr(valueText, new RectangleF(x + w - valW, trackY - 8.0f, valW, 20), 10.0f, false, Color.FromArgb(255, 205, 205, 210), mono: true, hAlign: StringAlignment.Far);
+
+            var slideArea = new RectangleF(track.X - 8, trackY - 14, track.Width + 16, 30);
+            if (ControlVisible(slideArea)) _renderer.AddHitRegion($"fsld-{key}", slideArea, null, onSlide);
+
+            y += rowH;
+            _renderer.DrawLine(x, y, x + w, y, Color.FromArgb(255, 30, 30, 32), 1.0f);
+            y += 8.0f;
+        }
+
+        private void RenderDayClockColorWheelRow(float x, ref float y, float w, AppSettings s, ThemeSpec theme)
+        {
+            if (_wheelSyncArgb != s.DayClockAccentColorArgb)
+            {
+                Color c = Color.FromArgb(s.DayClockAccentColorArgb);
+                RgbToHsv(c, out _wheelHue, out _wheelSat, out _wheelVal);
+                _wheelSyncArgb = s.DayClockAccentColorArgb;
+            }
+
+            float wheelSize = 148.0f;
+            float wheelX = x + w - wheelSize - 8.0f;
+            float wheelY = y + 8.0f;
+            _wheelRect = new RectangleF(wheelX, wheelY, wheelSize, wheelSize);
+
+            float leftW = Math.Max(140.0f, wheelX - x - 24.0f);
+            _renderer.DrawTextStr("Colour", new RectangleF(x, wheelY + 52.0f, leftW, 20), 11.2f, true, Color.FromArgb(255, 245, 245, 247));
+            _renderer.DrawTextStr(
+                "Pick anywhere on the wheel. The middle is white; the bar under it goes from black to full brightness.",
+                new RectangleF(x, wheelY + 74.0f, leftW, 50), 9.5f, false, Color.FromArgb(255, 152, 152, 158), noWrap: false);
+
+            EnsureWheelBitmap();
+            if (_wheelBitmap != null)
+            {
+                _renderer.G.DrawImage(_wheelBitmap, _wheelRect);
+            }
+            _renderer.DrawRoundedRect(_wheelRect, wheelSize * 0.5f, Color.FromArgb(60, 255, 255, 255), 1.0f);
+
+            // Draggable double-ring selector reticle
+            float rad = _wheelSat * (wheelSize * 0.5f - 2.0f);
+            float angleRad = _wheelHue * MathF.PI / 180.0f;
+            float selX = _wheelRect.X + wheelSize * 0.5f + MathF.Cos(angleRad) * rad;
+            float selY = _wheelRect.Y + wheelSize * 0.5f + MathF.Sin(angleRad) * rad;
+            using (var darkPen = new Pen(Color.FromArgb(180, 0, 0, 0), 2.5f))
+                _renderer.G.DrawEllipse(darkPen, selX - 6.5f, selY - 6.5f, 13.0f, 13.0f);
+            using (var whitePen = new Pen(Color.White, 1.8f))
+                _renderer.G.DrawEllipse(whitePen, selX - 6.5f, selY - 6.5f, 13.0f, 13.0f);
+
+            // Brightness gradient bar below wheel
+            float barY = _wheelRect.Bottom + 14.0f;
+            _valBarRect = new RectangleF(wheelX, barY, wheelSize, 12.0f);
+            Color fullBright = HsvToRgb(_wheelHue, _wheelSat, 1.0f);
+            using (var path = CreateRoundedPath(_valBarRect, 6.0f))
+            using (var brush = new LinearGradientBrush(_valBarRect, Color.Black, fullBright, LinearGradientMode.Horizontal))
+            {
+                _renderer.G.FillPath(brush, path);
+            }
+            _renderer.DrawRoundedRect(_valBarRect, 6.0f, Color.FromArgb(255, 52, 52, 58), 1.0f);
+
+            float thumbX = _valBarRect.X + Math.Clamp(_wheelVal, 0.0f, 1.0f) * _valBarRect.Width;
+            float thumbY = _valBarRect.Y + _valBarRect.Height * 0.5f;
+            _renderer.FillCircle(thumbX, thumbY, 7.0f, Color.FromArgb(255, 18, 18, 20));
+            using (var whitePen = new Pen(Color.White, 2.0f))
+                _renderer.G.DrawEllipse(whitePen, thumbX - 6.5f, thumbY - 6.5f, 13.0f, 13.0f);
+
+            // Live hex readout underneath
+            Color cur = Color.FromArgb(s.DayClockAccentColorArgb);
+            string hex = $"#{cur.R:X2}{cur.G:X2}{cur.B:X2}";
+            _renderer.DrawTextStr(hex, new RectangleF(wheelX, _valBarRect.Bottom + 8.0f, wheelSize, 18), 9.6f, false, Color.FromArgb(255, 220, 220, 226), mono: true, hAlign: StringAlignment.Center);
+
+            y = _valBarRect.Bottom + 36.0f;
+        }
+
+        private void RenderIslandWidgetCardsGrid(float x, ref float y, float w, AppSettings s, ThemeSpec theme)
+        {
+            s.IslandWidgets ??= new List<string> { "calendar", "focus", "weather", "stats" };
+            (string Id, string Title, string Desc, WidgetType? DesktopType)[] cards =
+            {
+                ("calendar",   "Today",        "The date and current week.",                       WidgetType.Calendar),
+                ("focus",      "Focus timer",  "A Pomodoro timer you start on the island.",        WidgetType.FocusTimer),
+                ("weather",    "Weather",      "Now, and today's high and low.",                   WidgetType.MinimalWeather),
+                ("stats",      "System stats", "CPU, GPU and memory as they move.",                WidgetType.PcStats),
+                ("clock",      "Clock",        "Your time, and the time in a city you pick.",      WidgetType.WorldClock),
+                ("todo",       "To do",        "A short list you tick off.",                       WidgetType.TodoList),
+                ("photos",     "Photos",       "Your pictures, a new one every half minute.",      WidgetType.Photos),
+                ("batteries",  "Batteries",    "This PC, headphones, mouse and more.",             WidgetType.Batteries)
+            };
+
+            const float gap = 12.0f;
+            float cardW = (w - gap) * 0.5f;
+            const float cardH = 148.0f;
+
+            for (int i = 0; i < cards.Length; ++i)
+            {
+                int col = i % 2;
+                int row = i / 2;
+                float cx = x + col * (cardW + gap);
+                float cy = y + row * (cardH + gap);
+                var rect = new RectangleF(cx, cy, cardW, cardH);
+
+                var c = cards[i];
+                int orderIdx = s.IslandWidgets.IndexOf(c.Id);
+                bool selected = orderIdx >= 0;
+                float hov = GetHover($"wcard-{c.Id}", _renderer.IsHovered(rect, _mouseX, _mouseY));
+
+                _renderer.FillRoundedRect(rect, 12, Color.FromArgb(255, 14, 14, 16));
+                Color borderCol = selected
+                    ? Color.FromArgb(255, 237, 237, 237)
+                    : Mix(Color.FromArgb(255, 36, 36, 40), Color.FromArgb(255, 86, 86, 94), hov);
+                _renderer.DrawRoundedRect(rect, 12, borderCol, selected ? 1.5f : 1.0f);
+
+                // Inner widget mockup surface
+                var inner = new RectangleF(rect.X + 12, rect.Y + 10, rect.Width - 24, 86);
+                _renderer.FillRoundedRect(inner, 10, Color.FromArgb(255, 24, 24, 27));
+                _renderer.DrawRoundedRect(inner, 10, Color.FromArgb(255, 42, 42, 46), 1.0f);
+
+                DrawWidgetPreviewMockup(c.Id == "clock" ? "worldclock" : c.Id, inner, s);
+
+                // Title + description + desktop pin icon + order badge (1..4 or +)
+                float footY = inner.Bottom + 8.0f;
+                _renderer.DrawTextStr(c.Title, new RectangleF(rect.X + 12, footY, rect.Width - 78, 18), 10.2f, true, Color.FromArgb(255, 245, 245, 247));
+                _renderer.DrawTextStr(c.Desc, new RectangleF(rect.X + 12, footY + 19, rect.Width - 24, 16), 8.6f, false, Color.FromArgb(255, 142, 142, 148));
+
+                // Register whole-card island toggle FIRST so the desktop pin button wins on click
+                if (ControlVisible(rect))
+                {
+                    string capturedId = c.Id;
+                    _renderer.AddHitRegion($"wcard-{c.Id}", rect, () =>
+                    {
+                        if (s.IslandWidgets.Contains(capturedId))
+                        {
+                            s.IslandWidgets.Remove(capturedId);
+                        }
+                        else
+                        {
+                            if (s.IslandWidgets.Count >= 4) s.IslandWidgets.RemoveAt(s.IslandWidgets.Count - 1);
+                            s.IslandWidgets.Add(capturedId);
+                        }
+                        NotifyChanged();
+                    });
+                }
+
+                // Desktop pin monitor button (registered AFTER card so it always receives clicks)
+                var pinBtn = new RectangleF(rect.Right - 60, footY - 1, 22, 22);
+                bool pinned = c.DesktopType.HasValue && AuxiliaryWindows.IsDesktopWidgetPinned(_state, c.DesktopType.Value);
+                _renderer.DrawCircle(pinBtn.X + 11, pinBtn.Y + 11, 10.0f, pinned ? Color.FromArgb(255, 237, 237, 237) : Color.FromArgb(255, 76, 76, 82), 1.0f);
+                _renderer.DrawRoundedRect(new RectangleF(pinBtn.X + 6, pinBtn.Y + 6.5f, 10, 7), 1.2f, pinned ? Color.White : Color.FromArgb(255, 168, 168, 174), 1.1f);
+                if (c.DesktopType.HasValue && ControlVisible(pinBtn))
+                {
+                    WidgetType dt = c.DesktopType.Value;
+                    _renderer.AddHitRegion($"wpin-{c.Id}", pinBtn, () =>
+                    {
+                        AuxiliaryWindows.ToggleDesktopWidget(_state, dt);
+                        NotifyChanged();
+                    });
+                }
+
+                // Order badge circle (1-4 white fill or + outline)
+                var badge = new RectangleF(rect.Right - 34, footY - 1, 22, 22);
+                if (selected)
+                {
+                    _renderer.FillCircle(badge.X + 11, badge.Y + 11, 10.5f, Color.FromArgb(255, 237, 237, 237));
+                    _renderer.DrawTextStr((orderIdx + 1).ToString(), badge, 9.6f, true, Color.FromArgb(255, 16, 16, 18), hAlign: StringAlignment.Center);
+                }
+                else
+                {
+                    _renderer.DrawCircle(badge.X + 11, badge.Y + 11, 10.0f, Color.FromArgb(255, 76, 76, 82), 1.0f);
+                    _renderer.DrawTextStr("+", badge, 11.0f, false, Color.FromArgb(255, 168, 168, 174), hAlign: StringAlignment.Center);
+                }
+            }
+
+            int totalRows = (cards.Length + 1) / 2;
+            y += totalRows * (cardH + gap) + 10.0f;
+        }
+
+        private void DrawThemePillRow((string Label, SurfaceTheme Theme)[] items, float x, float y, float w, SurfaceTheme active, ThemeSpec theme, Action<SurfaceTheme> onPick)
+        {
+            float cx = x;
+            for (int i = 0; i < items.Length; ++i)
+            {
+                var item = items[i];
+                float pw = Math.Max(54.0f, item.Label.Length * 7.6f + 22.0f);
+                var pill = new RectangleF(cx, y, pw, 26.0f);
+                bool isAct = item.Theme == active;
+                float hov = GetHover($"thm-{item.Theme}", _renderer.IsHovered(pill, _mouseX, _mouseY) && !isAct);
+                if (isAct)
+                {
+                    _renderer.FillRoundedRect(pill, 13.0f, Color.FromArgb(255, 237, 237, 237));
+                }
+                else if (hov > 0.01f)
+                {
+                    _renderer.FillRoundedRect(pill, 13.0f, Color.FromArgb((int)(24 * hov), 255, 255, 255));
+                }
+                _renderer.DrawTextStr(item.Label, pill, 9.6f, isAct, isAct ? Color.FromArgb(255, 16, 16, 18) : theme.TextPrimary, hAlign: StringAlignment.Center);
+                if (ControlVisible(pill))
+                {
+                    SurfaceTheme cap = item.Theme;
+                    _renderer.AddHitRegion($"thm-{item.Theme}", pill, () => onPick(cap));
+                }
+                cx += pw + 4.0f;
+            }
+        }
+
+        private void DrawFontPillRow((int Index, string Label)[] items, float x, float y, int activeIdx, ThemeSpec theme, Action<int> onPick)
+        {
+            float cx = x;
+            for (int i = 0; i < items.Length; ++i)
+            {
+                var item = items[i];
+                float pw = Math.Max(58.0f, item.Label.Length * 8.0f + 24.0f);
+                var pill = new RectangleF(cx, y, pw, 26.0f);
+                bool isAct = item.Index == activeIdx;
+                float hov = GetHover($"fnt-{item.Index}", _renderer.IsHovered(pill, _mouseX, _mouseY) && !isAct);
+                if (isAct)
+                {
+                    _renderer.FillRoundedRect(pill, 13.0f, Color.FromArgb(255, 237, 237, 237));
+                }
+                else if (hov > 0.01f)
+                {
+                    _renderer.FillRoundedRect(pill, 13.0f, Color.FromArgb((int)(24 * hov), 255, 255, 255));
+                }
+                _renderer.DrawTextStr(item.Label, pill, 9.8f, isAct, isAct ? Color.FromArgb(255, 16, 16, 18) : theme.TextPrimary, hAlign: StringAlignment.Center);
+                if (ControlVisible(pill))
+                {
+                    int cap = item.Index;
+                    _renderer.AddHitRegion($"fnt-{item.Index}", pill, () => onPick(cap));
+                }
+                cx += pw + 4.0f;
+            }
+        }
+
+        private void DrawWidgetPreviewMockup(string id, RectangleF r, AppSettings s)
+        {
+            Color white = Color.FromArgb(255, 245, 245, 247);
+            Color muted = Color.FromArgb(255, 148, 148, 154);
+
+            switch (id)
+            {
+                case "calendar":
+                {
+                    DateTime now = DateTime.Now;
+                    int week = System.Globalization.ISOWeek.GetWeekOfYear(now);
+                    _renderer.DrawTextStr(now.Day.ToString(), new RectangleF(r.X + 10, r.Y + 6, 44, 30), 19.0f, true, white);
+                    _renderer.DrawTextStr(now.ToString("ddd").ToUpperInvariant(), new RectangleF(r.X + 46, r.Y + 8, 44, 14), 8.2f, true, white);
+                    _renderer.DrawTextStr(now.ToString("MMM").ToUpperInvariant(), new RectangleF(r.X + 46, r.Y + 20, 44, 14), 8.2f, false, muted);
+                    _renderer.DrawTextStr($"Week {week}", new RectangleF(r.Right - 64, r.Y + 10, 54, 14), 8.0f, false, muted, hAlign: StringAlignment.Far);
+
+                    string[] days = { "S", "M", "T", "W", "T", "F", "S" };
+                    int todayDow = (int)now.DayOfWeek;
+                    DateTime sunday = now.AddDays(-todayDow);
+                    float colW = (r.Width - 16) / 7.0f;
+                    for (int d = 0; d < 7; ++d)
+                    {
+                        float dx = r.X + 8 + d * colW;
+                        bool isToday = d == todayDow;
+                        if (isToday)
+                        {
+                            _renderer.FillRoundedRect(new RectangleF(dx + 1, r.Y + 42, colW - 2, 32), 6, Color.FromArgb(255, 58, 58, 64));
+                        }
+                        _renderer.DrawTextStr(days[d], new RectangleF(dx, r.Y + 44, colW, 13), 7.5f, isToday, isToday ? white : muted, hAlign: StringAlignment.Center);
+                        _renderer.DrawTextStr(sunday.AddDays(d).Day.ToString(), new RectangleF(dx, r.Y + 58, colW, 14), 8.0f, isToday, isToday ? white : muted, hAlign: StringAlignment.Center);
+                    }
+                    break;
+                }
+                case "focus":
+                {
+                    float ringD = 54.0f;
+                    var ring = new RectangleF(r.X + 12, r.Y + (r.Height - ringD) * 0.5f, ringD, ringD);
+                    using (var pen = new Pen(Color.FromArgb(255, 52, 52, 58), 3.0f))
+                        _renderer.G.DrawEllipse(pen, ring);
+                    _renderer.DrawTextStr("25:00", ring, 9.2f, true, white, mono: true, hAlign: StringAlignment.Center);
+
+                    float tx = ring.Right + 12;
+                    _renderer.DrawTextStr("Focus timer", new RectangleF(tx, r.Y + 12, r.Right - tx - 8, 18), 10.2f, true, white);
+                    _renderer.DrawTextStr("25 + 5 min", new RectangleF(tx, r.Y + 30, r.Right - tx - 8, 15), 8.5f, false, muted);
+                    _renderer.FillCircle(tx + 12, r.Y + 60, 10.5f, white);
+                    _renderer.DrawLucideIcon("play", tx + 13, r.Y + 60, 8.0f, Color.FromArgb(255, 16, 16, 18), 1.5f);
+                    _renderer.FillCircle(tx + 38, r.Y + 60, 9.5f, Color.FromArgb(255, 38, 38, 42));
+                    _renderer.DrawTextStr("-", new RectangleF(tx + 28, r.Y + 50, 20, 20), 10.0f, true, white, hAlign: StringAlignment.Center);
+                    _renderer.FillCircle(tx + 62, r.Y + 60, 9.5f, Color.FromArgb(255, 38, 38, 42));
+                    _renderer.DrawTextStr("+", new RectangleF(tx + 52, r.Y + 50, 20, 20), 10.0f, true, white, hAlign: StringAlignment.Center);
+                    break;
+                }
+                case "weather":
+                {
+                    _renderer.DrawLucideIcon("sun", r.X + 24, r.Y + 28, 16.0f, Color.FromArgb(255, 255, 204, 64), 1.6f);
+                    _renderer.DrawTextStr($"{s.WeatherTempC}\u00B0", new RectangleF(r.X + 44, r.Y + 12, 64, 30), 18.0f, true, white);
+                    _renderer.DrawTextStr(string.IsNullOrWhiteSpace(s.WeatherCity) ? "Local" : s.WeatherCity, new RectangleF(r.X + 14, r.Y + 46, r.Width - 28, 16), 9.6f, true, white);
+                    _renderer.DrawTextStr($"H:{s.WeatherHighC}\u00B0  L:{s.WeatherLowC}\u00B0", new RectangleF(r.X + 14, r.Y + 62, r.Width - 28, 14), 8.2f, false, muted);
+                    break;
+                }
+                case "stats":
+                {
+                    _renderer.DrawTextStr("PC Stats", new RectangleF(r.X + 12, r.Y + 8, r.Width - 24, 16), 9.6f, true, white);
+                    string[] labels = { "CPU", "GPU", "RAM" };
+                    float[] pcts = { 0.28f, 0.16f, 0.54f };
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        float by = r.Y + 30 + k * 16;
+                        _renderer.DrawTextStr(labels[k], new RectangleF(r.X + 12, by - 2, 34, 14), 8.0f, false, muted, mono: true);
+                        _renderer.FillRoundedRect(new RectangleF(r.X + 46, by + 3, r.Width - 62, 5), 2.5f, Color.FromArgb(255, 42, 42, 48));
+                        _renderer.FillRoundedRect(new RectangleF(r.X + 46, by + 3, (r.Width - 62) * pcts[k], 5), 2.5f, white);
+                    }
+                    break;
+                }
+                case "todo":
+                {
+                    _renderer.DrawTextStr("To-Do", new RectangleF(r.X + 12, r.Y + 8, r.Width - 24, 16), 9.6f, true, white);
+                    string[] items = { "Review notes", "Ship release" };
+                    for (int k = 0; k < 2; ++k)
+                    {
+                        float ty = r.Y + 32 + k * 20;
+                        _renderer.DrawRoundedRect(new RectangleF(r.X + 12, ty + 2, 11, 11), 5.5f, muted, 1.1f);
+                        _renderer.DrawTextStr(items[k], new RectangleF(r.X + 28, ty, r.Width - 36, 16), 8.6f, false, muted);
+                    }
+                    break;
+                }
+                case "worldclock":
+                {
+                    _renderer.DrawTextStr(string.IsNullOrWhiteSpace(s.WorldClockCity) ? "Tokyo" : s.WorldClockCity, new RectangleF(r.X + 12, r.Y + 12, r.Width - 24, 16), 9.6f, true, white);
+                    DateTime world = DateTime.UtcNow.AddHours(s.WorldClockOffsetHours);
+                    _renderer.DrawTextStr(world.ToString(s.Use24HourClock ? "HH:mm" : "h:mm tt"), new RectangleF(r.X + 12, r.Y + 34, r.Width - 24, 28), 16.0f, true, white, mono: true);
+                    break;
+                }
+                case "photos":
+                {
+                    _renderer.DrawLucideIcon("image", r.X + 26, r.Y + 30, 16.0f, muted, 1.5f);
+                    _renderer.DrawTextStr("Photos", new RectangleF(r.X + 46, r.Y + 18, r.Width - 56, 18), 10.0f, true, white);
+                    _renderer.DrawTextStr("Local folder", new RectangleF(r.X + 46, r.Y + 38, r.Width - 56, 16), 8.4f, false, muted);
+                    break;
+                }
+                case "batteries":
+                {
+                    _renderer.DrawLucideIcon("battery", r.X + 26, r.Y + 30, 16.0f, Color.FromArgb(255, 48, 209, 88), 1.5f);
+                    _renderer.DrawTextStr("Batteries", new RectangleF(r.X + 46, r.Y + 18, r.Width - 56, 18), 10.0f, true, white);
+                    _renderer.DrawTextStr("PC & devices", new RectangleF(r.X + 46, r.Y + 38, r.Width - 56, 16), 8.4f, false, muted);
+                    break;
+                }
+            }
+        }
+
+        private void EnsureWheelBitmap()
+        {
+            if (_wheelBitmap != null) return;
+            const int size = 160;
+            var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            float center = (size - 1) * 0.5f;
+            float radius = center - 1.0f;
+            for (int y = 0; y < size; ++y)
+            {
+                for (int x = 0; x < size; ++x)
+                {
+                    float dx = x - center;
+                    float dy = y - center;
+                    float dist = MathF.Sqrt(dx * dx + dy * dy);
+                    if (dist > radius + 1.0f)
+                    {
+                        bmp.SetPixel(x, y, Color.Transparent);
+                        continue;
+                    }
+                    float alpha = dist > radius ? Math.Clamp(1.0f - (dist - radius), 0.0f, 1.0f) : 1.0f;
+                    float sat = Math.Clamp(dist / radius, 0.0f, 1.0f);
+                    float hue = MathF.Atan2(dy, dx) * 180.0f / MathF.PI;
+                    if (hue < 0.0f) hue += 360.0f;
+                    Color c = HsvToRgb(hue, sat, 1.0f);
+                    bmp.SetPixel(x, y, Color.FromArgb((int)(alpha * 255.0f), c.R, c.G, c.B));
+                }
+            }
+            _wheelBitmap = bmp;
+        }
+
+        private static Color HsvToRgb(float h, float s, float v)
+        {
+            h = ((h % 360.0f) + 360.0f) % 360.0f;
+            s = Math.Clamp(s, 0.0f, 1.0f);
+            v = Math.Clamp(v, 0.0f, 1.0f);
+            float c = v * s;
+            float x = c * (1.0f - MathF.Abs((h / 60.0f) % 2.0f - 1.0f));
+            float m = v - c;
+            float r = 0, g = 0, b = 0;
+            if (h < 60) { r = c; g = x; }
+            else if (h < 120) { r = x; g = c; }
+            else if (h < 180) { g = c; b = x; }
+            else if (h < 240) { g = x; b = c; }
+            else if (h < 300) { r = x; b = c; }
+            else { r = c; b = x; }
+            return Color.FromArgb(255,
+                Math.Clamp((int)MathF.Round((r + m) * 255.0f), 0, 255),
+                Math.Clamp((int)MathF.Round((g + m) * 255.0f), 0, 255),
+                Math.Clamp((int)MathF.Round((b + m) * 255.0f), 0, 255));
+        }
+
+        private static void RgbToHsv(Color c, out float h, out float s, out float v)
+        {
+            float r = c.R / 255.0f, g = c.G / 255.0f, b = c.B / 255.0f;
+            float max = MathF.Max(r, MathF.Max(g, b));
+            float min = MathF.Min(r, MathF.Min(g, b));
+            float delta = max - min;
+            v = max;
+            s = max <= 0.0001f ? 0.0f : delta / max;
+            if (delta <= 0.0001f) { h = 0.0f; return; }
+            if (max == r) h = 60.0f * (((g - b) / delta) % 6.0f);
+            else if (max == g) h = 60.0f * (((b - r) / delta) + 2.0f);
+            else h = 60.0f * (((r - g) / delta) + 4.0f);
+            if (h < 0.0f) h += 360.0f;
+        }
+
+        private void UpdateWheelFromPoint(float lx, float ly)
+        {
+            float cx = _wheelRect.X + _wheelRect.Width * 0.5f;
+            float cy = _wheelRect.Y + _wheelRect.Height * 0.5f;
+            float r = _wheelRect.Width * 0.5f;
+            float dx = lx - cx;
+            float dy = ly - cy;
+            _wheelSat = Math.Clamp(MathF.Sqrt(dx * dx + dy * dy) / r, 0.0f, 1.0f);
+            float deg = MathF.Atan2(dy, dx) * 180.0f / MathF.PI;
+            if (deg < 0.0f) deg += 360.0f;
+            _wheelHue = deg;
+            ApplyWheelColor();
+        }
+
+        private void UpdateValBarFromPoint(float lx)
+        {
+            _wheelVal = Math.Clamp((lx - _valBarRect.X) / Math.Max(1.0f, _valBarRect.Width), 0.0f, 1.0f);
+            ApplyWheelColor();
+        }
+
+        private void ApplyWheelColor()
+        {
+            Color col = HsvToRgb(_wheelHue, _wheelSat, _wheelVal);
+            int argb = col.ToArgb();
+            _wheelSyncArgb = argb;
+            _state.Settings.DayClockAccentColorArgb = argb;
+            AuxiliaryWindows.ApplyDayClockSettings(_state);
+            NotifyChanged();
+        }
+
+        private static string GetLanguageDisplayLabel(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code) || string.Equals(code, "system", StringComparison.OrdinalIgnoreCase))
+                return "Same as Windows";
+            foreach (var opt in LanguageOptions)
+                if (string.Equals(opt.Code, code, StringComparison.OrdinalIgnoreCase)) return opt.Label;
+            return "Same as Windows";
+        }
+
+        private void RenderLanguageDropdownPopup(RectangleF anchor)
+        {
+            const float itemH = 28.0f;
+            float popupH = LanguageOptions.Length * itemH + 8.0f;
+            float maxBottom = LogicalHeight - 16.0f;
+            float popupY = anchor.Bottom + 4.0f;
+            if (popupY + popupH > maxBottom) popupY = Math.Max(52.0f, maxBottom - popupH);
+
+            var popup = new RectangleF(anchor.X, popupY, anchor.Width, popupH);
+            _renderer.FillRoundedRect(new RectangleF(popup.X + 2, popup.Y + 4, popup.Width, popup.Height), 9, Color.FromArgb(140, 0, 0, 0));
+            _renderer.FillRoundedRect(popup, 8, Color.FromArgb(255, 20, 20, 23));
+            _renderer.DrawRoundedRect(popup, 8, Color.FromArgb(255, 52, 52, 58), 1.0f);
+
+            string activeCode = string.IsNullOrWhiteSpace(_state.Settings.Language) ? "system" : _state.Settings.Language;
+            for (int i = 0; i < LanguageOptions.Length; ++i)
+            {
+                var opt = LanguageOptions[i];
+                var item = new RectangleF(popup.X + 4, popup.Y + 4 + i * itemH, popup.Width - 8, itemH);
+                bool sel = string.Equals(activeCode, opt.Code, StringComparison.OrdinalIgnoreCase);
+                bool hov = _renderer.IsHovered(item, _mouseX, _mouseY);
+                if (hov || sel)
+                    _renderer.FillRoundedRect(item, 6, hov ? Color.FromArgb(255, 38, 38, 43) : Color.FromArgb(255, 28, 28, 32));
+                _renderer.DrawTextStr(opt.Label, new RectangleF(item.X + 10, item.Y, item.Width - 26, item.Height), 10.0f, sel, Color.FromArgb(255, 242, 242, 245));
+                if (sel) _renderer.FillCircle(item.Right - 12, item.Y + item.Height * 0.5f, 2.5f, Color.FromArgb(255, 237, 237, 237));
+                string capCode = opt.Code;
+                _renderer.AddHitRegion($"set-lang-{i}", item, () =>
+                {
+                    _state.Settings.Language = capCode;
+                    _langDropdownOpen = false;
+                    NotifyChanged();
+                });
+            }
+        }
+
+        private void DrawTopBarBadge(RectangleF rect)
+        {
+            _renderer.FillRoundedRect(rect, 5, Color.FromArgb(255, 24, 24, 27));
+            _renderer.DrawRoundedRect(rect, 5, Color.FromArgb(255, 44, 44, 49), 1.0f);
+            float cell = 1.25f;
+            float startX = rect.X + (rect.Width - 7 * cell) * 0.5f;
+            float startY = rect.Y + (rect.Height - 7 * cell) * 0.5f;
+            var prev = _renderer.G.SmoothingMode;
+            _renderer.G.SmoothingMode = SmoothingMode.None;
+            using var wb = new SolidBrush(Color.FromArgb(255, 240, 240, 244));
+            using var ab = new SolidBrush(Color.FromArgb(255, 120, 214, 255));
+            for (int r = 0; r < 7; ++r)
+                for (int c = 0; c < 7; ++c)
+                    if (PixelN[r, c] != 0)
+                        _renderer.G.FillRectangle(PixelN[r, c] == 2 ? ab : wb, startX + c * cell, startY + r * cell, cell, cell);
+            _renderer.G.SmoothingMode = prev;
+        }
+
+        private void DrawCloseGlyph(RectangleF rect, Color color)
+        {
+            float cx = rect.X + rect.Width * 0.5f;
+            float cy = rect.Y + rect.Height * 0.5f;
+            using var pen = new Pen(color, 1.35f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            _renderer.G.DrawLine(pen, cx - 4.5f, cy - 4.5f, cx + 4.5f, cy + 4.5f);
+            _renderer.G.DrawLine(pen, cx + 4.5f, cy - 4.5f, cx - 4.5f, cy + 4.5f);
+        }
+
+        private void DrawChevronDown(float cx, float cy, Color color)
+        {
+            using var pen = new Pen(color, 1.35f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            _renderer.G.DrawLines(pen, new[] { new PointF(cx - 3.8f, cy - 1.8f), new PointF(cx, cy + 2.0f), new PointF(cx + 3.8f, cy - 1.8f) });
+        }
+
+        private void DrawSidebarIcon(string icon, float cx, float cy, float size, Color color)
+        {
+            using var pen = new Pen(color, 1.35f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            float r = size * 0.45f;
+            switch (icon)
+            {
+                case "island":
+                    _renderer.DrawRoundedRect(new RectangleF(cx - r, cy - r * 0.72f, r * 2, r * 1.44f), 2.5f, color, 1.3f);
+                    _renderer.G.DrawLine(pen, cx - r * 0.45f, cy - r * 0.3f, cx + r * 0.45f, cy - r * 0.3f);
+                    return;
+                case "taskbar":
+                    _renderer.DrawRoundedRect(new RectangleF(cx - r, cy - r * 0.72f, r * 2, r * 1.44f), 2.5f, color, 1.3f);
+                    _renderer.G.DrawLine(pen, cx - r + 1.5f, cy + r * 0.25f, cx + r - 1.5f, cy + r * 0.25f);
+                    return;
+                case "gauge":
+                    _renderer.G.DrawArc(pen, cx - r, cy - r * 0.7f, r * 2, r * 2, 180, 180);
+                    _renderer.G.DrawLine(pen, cx, cy + r * 0.3f, cx + r * 0.55f, cy - r * 0.25f);
+                    return;
+                case "radio":
+                    _renderer.FillCircle(cx, cy, 1.6f, color);
+                    _renderer.G.DrawArc(pen, cx - r * 0.65f, cy - r * 0.65f, r * 1.3f, r * 1.3f, -45, 90);
+                    _renderer.G.DrawArc(pen, cx - r * 0.65f, cy - r * 0.65f, r * 1.3f, r * 1.3f, 135, 90);
+                    _renderer.G.DrawArc(pen, cx - r, cy - r, r * 2, r * 2, -45, 90);
+                    _renderer.G.DrawArc(pen, cx - r, cy - r, r * 2, r * 2, 135, 90);
+                    return;
+                case "terminal":
+                    _renderer.G.DrawLines(pen, new[] { new PointF(cx - r * 0.75f, cy - r * 0.5f), new PointF(cx - r * 0.1f, cy), new PointF(cx - r * 0.75f, cy + r * 0.5f) });
+                    _renderer.G.DrawLine(pen, cx + r * 0.1f, cy + r * 0.5f, cx + r * 0.8f, cy + r * 0.5f);
+                    return;
+                case "zap":
+                    _renderer.G.DrawPolygon(pen, new[] { new PointF(cx + 1.0f, cy - r), new PointF(cx - r * 0.75f, cy + 0.5f), new PointF(cx, cy + 0.5f), new PointF(cx - 1.0f, cy + r), new PointF(cx + r * 0.75f, cy - 0.5f), new PointF(cx, cy - 0.5f) });
+                    return;
+                case "keyboard":
+                    _renderer.DrawRoundedRect(new RectangleF(cx - r, cy - r * 0.65f, r * 2, r * 1.3f), 2.2f, color, 1.3f);
+                    _renderer.G.DrawLine(pen, cx - r * 0.45f, cy + r * 0.25f, cx + r * 0.45f, cy + r * 0.25f);
+                    return;
+                default:
+                    _renderer.DrawLucideIcon(icon, cx, cy, size, color, 1.45f);
+                    return;
+            }
+        }
+
+        private static GraphicsPath CreateRoundedPath(RectangleF rect, float radius)
+        {
+            float r = Math.Min(radius, Math.Min(rect.Width, rect.Height) * 0.5f);
+            float d = Math.Max(0.5f, r * 2.0f);
+            var path = new GraphicsPath();
+            path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+            path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+            path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         private void Card(float y, float h, float x, float w, Color bg, Color border)
@@ -1527,41 +2647,33 @@ namespace OpenPixel.UI
             y += ToggleRowH;
         }
 
-        // Liquid Glass Toggle modeled on KaranocaVe/LiquidGlassAvaloniaUI:
-        // Translucent vibrant glass track with inner hairline rim + curved refractive capsule thumb
-        // featuring soft depth shadow, optical dome gradient, and chromatic edge highlight.
-        private void DrawSwitch(float x, float y, float w, float h, float t, float hover, ThemeSpec theme)
+        private void DrawSwitch(float x, float y, float w, float h, float t, float hover, ThemeSpec theme, bool enabled = true)
         {
             var track = new RectangleF(x, y, w, h);
-            Color off = Color.FromArgb(88, 120, 124, 138);
-            Color on = Color.FromArgb(225, 48, 209, 88);
-            _renderer.FillRoundedRect(track, h * 0.5f, Mix(off, on, t));
-            // Inner frosted glass track border
-            _renderer.DrawRoundedRect(track, h * 0.5f, Color.FromArgb(54, 255, 255, 255), 1.0f);
+            if (!enabled)
+            {
+                Color disTrack = Mix(Color.FromArgb(255, 34, 34, 38), Color.FromArgb(255, 118, 118, 124), t);
+                _renderer.FillRoundedRect(track, h * 0.5f, disTrack);
+                float dPad = 4.0f;
+                float dKnob = h - dPad * 2.0f;
+                float dKx = x + dPad + (w - dPad * 2.0f - dKnob) * t;
+                _renderer.FillCircle(dKx + dKnob * 0.5f, y + h * 0.5f, dKnob * 0.5f, Color.FromArgb(255, 22, 22, 24));
+                return;
+            }
 
-            float pad = 2.2f;
-            float stretch = 1.0f + 0.12f * hover;
-            float thumbW = (w - pad * 2.0f) * 0.58f * stretch;
-            float thumbH = (h - pad * 2.0f) * (1.0f + 0.06f * hover);
-            float travel = Math.Max(0.0f, w - pad * 2.0f - thumbW);
-            float tx = x + pad + travel * t;
-            float ty = y + (h - thumbH) * 0.5f;
-            var thumb = new RectangleF(tx, ty, thumbW, thumbH);
+            Color offTrack = Mix(Color.FromArgb(255, 20, 20, 22), Color.FromArgb(255, 30, 30, 34), hover);
+            Color onTrack = Mix(Color.FromArgb(255, 237, 237, 237), Color.White, hover);
+            _renderer.FillRoundedRect(track, h * 0.5f, Mix(offTrack, onTrack, t));
+            if (t < 0.98f)
+            {
+                _renderer.DrawRoundedRect(track, h * 0.5f, Color.FromArgb((int)(255 * (1.0f - t)), 54, 54, 60), 1.0f);
+            }
 
-            // Soft drop shadow beneath the glass knob
-            _renderer.FillRoundedRect(new RectangleF(tx, ty + 1.5f, thumbW, thumbH), thumbH * 0.5f, Color.FromArgb(55, 0, 0, 0));
-
-            // Translucent frosted glass knob body (turns more optical/refractive on hover)
-            int fillAlpha = (int)(242 - 96 * hover);
-            _renderer.FillRoundedRect(thumb, thumbH * 0.5f, Color.FromArgb(fillAlpha, 248, 251, 255));
-
-            // Top specular crescent inside the knob
-            var sheen = new RectangleF(tx + 3.0f, ty + 1.5f, thumbW - 6.0f, thumbH * 0.44f);
-            _renderer.FillRoundedRect(sheen, sheen.Height * 0.5f, Color.FromArgb((int)(120 + 75 * hover), 255, 255, 255));
-
-            // Chromatic refraction edge highlight (cyan-white)
-            _renderer.DrawRoundedRect(thumb, thumbH * 0.5f,
-                Color.FromArgb((int)(110 + 110 * hover), 175, 232, 255), 1.15f);
+            float pad = 4.0f;
+            float knobD = h - pad * 2.0f;
+            float knobX = x + pad + (w - pad * 2.0f - knobD) * t;
+            Color knobCol = Mix(Color.FromArgb(255, 118, 118, 124), Color.FromArgb(255, 16, 16, 18), t);
+            _renderer.FillCircle(knobX + knobD * 0.5f, y + h * 0.5f, knobD * 0.5f, knobCol);
         }
 
         // Liquid Glass Slider (NotchPixel white track + Kyant0/AndroidLiquidGlass capsule glass thumb & pressed halo)
@@ -1677,6 +2789,31 @@ namespace OpenPixel.UI
             _mouseX = lx;
             _mouseY = ly;
             bool handled = false;
+            if (e.Button == MouseButtons.Left && _state.ActiveSettingsCat == SettingsCategory.Widgets)
+            {
+                if (!_wheelRect.IsEmpty)
+                {
+                    float cx = _wheelRect.X + _wheelRect.Width * 0.5f;
+                    float cy = _wheelRect.Y + _wheelRect.Height * 0.5f;
+                    float r = _wheelRect.Width * 0.5f + 4.0f;
+                    if ((lx - cx) * (lx - cx) + (ly - cy) * (ly - cy) <= r * r)
+                    {
+                        _draggingWheel = true;
+                        Capture = true;
+                        UpdateWheelFromPoint(lx, ly);
+                        RenderNow();
+                        return;
+                    }
+                }
+                if (!_valBarRect.IsEmpty && lx >= _valBarRect.X - 6 && lx <= _valBarRect.Right + 6 && ly >= _valBarRect.Y - 8 && ly <= _valBarRect.Bottom + 8)
+                {
+                    _draggingValBar = true;
+                    Capture = true;
+                    UpdateValBarFromPoint(lx);
+                    RenderNow();
+                    return;
+                }
+            }
             try { handled = _renderer.DispatchClick(lx, ly); }
             catch { /* never let a control action crash the window */ }
             if (handled)
@@ -1686,7 +2823,13 @@ namespace OpenPixel.UI
                 if (Visible) RenderNow();
                 return;
             }
-            if (e.Button == MouseButtons.Left && ly < 52 && lx < LogicalWidth - 56)
+            if (_langDropdownOpen)
+            {
+                _langDropdownOpen = false;
+                RenderNow();
+                return;
+            }
+            if (e.Button == MouseButtons.Left && ly < TopBarHeight && lx < LogicalWidth - 44)
             {
                 Point pt = Cursor.Position;
                 _dragOffX = pt.X - Left;
@@ -1711,6 +2854,18 @@ namespace OpenPixel.UI
                 Location = new Point(pt.X - _dragOffX, pt.Y - _dragOffY);
                 return;
             }
+            if (_draggingWheel)
+            {
+                UpdateWheelFromPoint(lx, ly);
+                RenderNow();
+                return;
+            }
+            if (_draggingValBar)
+            {
+                UpdateValBarFromPoint(lx);
+                RenderNow();
+                return;
+            }
             bool draggingControl = (e.Button & MouseButtons.Left) != 0;
             if (draggingControl)
             {
@@ -1718,7 +2873,7 @@ namespace OpenPixel.UI
                 catch { }
             }
             long now = Environment.TickCount64;
-            int minInterval = draggingControl ? 16 : 36;
+            int minInterval = draggingControl ? 12 : 16;
             if (now - _lastHoverPaintMs >= minInterval)
             {
                 _lastHoverPaintMs = now;
@@ -1732,6 +2887,8 @@ namespace OpenPixel.UI
         {
             base.OnMouseUp(e);
             _draggingTitlebar = false;
+            _draggingWheel = false;
+            _draggingValBar = false;
             Capture = false;
         }
 
@@ -1742,6 +2899,8 @@ namespace OpenPixel.UI
                 FlushPendingSave();
                 _saveTimer.Dispose();
                 _animTimer.Dispose();
+                _wheelBitmap?.Dispose();
+                _wheelBitmap = null;
                 _renderer.Dispose();
             }
             base.Dispose(disposing);

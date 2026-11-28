@@ -60,25 +60,28 @@ namespace OpenPixel.UI
             float openT = Math.Clamp(state.OpenSpring.Value / 100.0f, 0.0f, 1.15f);
             float notchT = Math.Clamp(state.NotchSpring.Value / 100.0f, 0.0f, 1.0f);
             float recT = Math.Clamp(state.RecSpring.Value / 100.0f, 0.0f, 1.0f);
+            float slimT = Math.Clamp(state.SlimIdleSpring.Value / 100.0f, 0.0f, 1.0f);
 
-            float pillBaseW = DipMetrics.PillW + (DipMetrics.RecPillW - DipMetrics.PillW) * recT;
+            float normalPillW = DipMetrics.PillW + (DipMetrics.RecPillW - DipMetrics.PillW) * recT;
             if (state.ToastActive && !state.IslandOpen)
             {
-                pillBaseW = (state.ToastPopupType == TopPopupType.Volume || state.ToastPopupType == TopPopupType.Brightness)
-                    ? 248.0f
-                    : 296.0f;
+                normalPillW = (state.ToastPopupType == TopPopupType.Volume || state.ToastPopupType == TopPopupType.Brightness)
+                    ? 262.0f
+                    : 312.0f;
             }
             else if (s.ShowSongTitleInClosedPill && state.Media.HasSession && !state.IslandOpen)
             {
-                pillBaseW = 258.0f;
+                normalPillW = 276.0f;
             }
 
+            float pillBaseW = normalPillW + (174.0f - normalPillW) * slimT;
             float pillW = pillBaseW * (s.PillSizePercent / 100.0f);
-            float pillH = DipMetrics.PillH * (s.PillSizePercent / 100.0f);
+            float normalPillH = DipMetrics.PillH * (s.PillSizePercent / 100.0f);
             if (state.ToastActive && state.ToastIsReminder && !state.IslandOpen)
             {
-                pillH = 44.0f * (s.PillSizePercent / 100.0f);
+                normalPillH = 46.0f * (s.PillSizePercent / 100.0f);
             }
+            float pillH = normalPillH + (5.5f - normalPillH) * slimT;
 
             // If ActivePanel was mutated directly outside SelectPanel (e.g. drag-drop,
             // snapshots, or tests) while PanelSpring is settled at 100, sync ShownPanel.
@@ -139,7 +142,7 @@ namespace OpenPixel.UI
                 var s = state.Settings;
                 float openScaleT = Math.Clamp(state.OpenSpring.Value / 100.0f, 0.0f, 1.0f);
                 float openTextScale = 1.0f + (s.OpenSizePercent / 100.0f - 1.0f) * openScaleT;
-                r.TextScaleMultiplier = Math.Clamp((s.PillSizePercent / 100.0f) * openTextScale, 0.65f, 2.1f);
+                r.TextScaleMultiplier = Math.Clamp((s.PillSizePercent / 100.0f) * openTextScale * 1.08f, 0.72f, 2.2f);
                 // Cross-faded surface: a theme switch eases in instead of hard-cutting.
                 ThemeSpec theme = state.CurrentTheme;
                 float notchFactor01 = Math.Clamp(state.NotchSpring.Value / 100.0f, 0.0f, 1.0f);
@@ -152,10 +155,10 @@ namespace OpenPixel.UI
                 // 1. Surface Fill: Exact Kyant0/AndroidLiquidGlass C# port covering the full
                 // flared notch silhouette (including both left & right top ears so no seam shows).
                 bool drewGlass = false;
-                if (!s.DrawWithProcessor && (s.Theme == SurfaceTheme.LiquidGlass || s.Theme == SurfaceTheme.CandyGlass))
+                if (s.Theme == SurfaceTheme.LiquidGlass || s.Theme == SurfaceTheme.CandyGlass || s.Theme == SurfaceTheme.Acrylic)
                 {
                     float flare = (s.Edge == EdgePlacement.TopCenter && notchFactor01 > 0.5f)
-                        ? DipMetrics.FlareR * ((notchFactor01 - 0.5f) * 2.0f) + 2.0f
+                        ? DipMetrics.FlareR * ((notchFactor01 - 0.5f) * 2.0f)
                         : 0.0f;
                     float glassL = left - flare;
                     float glassW = width + flare * 2.0f;
@@ -163,18 +166,10 @@ namespace OpenPixel.UI
                         windowScreenRect.Left + (int)(glassL * r.DpiScale),
                         windowScreenRect.Top + (int)(top * r.DpiScale),
                         Math.Max(16, (int)(glassW * r.DpiScale)),
-                        Math.Max(12, (int)(height * r.DpiScale)));
+                        Math.Max(4, (int)MathF.Ceiling(height * r.DpiScale)));
                     drewGlass = r.RenderLiquidGlassBackdrop(
                         subScreen, glassL, top, glassW, height,
-                        s.GlassBlurRadius, s.Theme == SurfaceTheme.CandyGlass);
-                    if (drewGlass)
-                    {
-                        // Subtle top-only specular highlight (no milky side fade)
-                        var sheenRect = new RectangleF(glassL, top, glassW, Math.Max(8.0f, height * 0.24f));
-                        using var sheen = new LinearGradientBrush(sheenRect,
-                            Color.FromArgb(20, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), 90.0f);
-                        r.G.FillRectangle(sheen, sheenRect);
-                    }
+                        s.GlassBlurRadius, s.Theme, radius * r.DpiScale, flare * r.DpiScale);
                 }
 
                 if (!drewGlass)
@@ -228,10 +223,16 @@ namespace OpenPixel.UI
                     r.Opacity = 1.0f;
                 }
 
-                // Subtle 1 DIP inner hairline clipped inside the outline (matches island.js line 522)
-                Color borderCol = s.HigherContrast ? Color.FromArgb(145, 255, 255, 255) : theme.Edge;
-                using var rimPen = new Pen(borderCol, s.HigherContrast ? 2.6f : 2.0f);
-                r.G.DrawPath(rimPen, path);
+                // Clean rim stroke: skip thick white-alpha stroke on Black / PureBlack so the
+                // two concave top notch ears stay pure seamless black instead of turning grey.
+                if (s.HigherContrast || (s.Theme != SurfaceTheme.Black && s.Theme != SurfaceTheme.PureBlack))
+                {
+                    Color borderCol = s.HigherContrast
+                        ? Color.FromArgb(145, 255, 255, 255)
+                        : (drewGlass ? Color.FromArgb(48, theme.Edge.R, theme.Edge.G, theme.Edge.B) : theme.Edge);
+                    using var rimPen = new Pen(borderCol, s.HigherContrast ? 2.4f : (drewGlass ? 1.0f : 1.2f));
+                    r.G.DrawPath(rimPen, path);
+                }
 
                 r.G.Clip = prevClip;
             }
@@ -408,6 +409,9 @@ namespace OpenPixel.UI
             LiquidGlassRenderer r, GlobalAppState state,
             float left, float top, float width, float height, ThemeSpec theme, float timeSec)
         {
+            // When collapsed into the slim top idling line, keep it a pure clean themed strip.
+            if (height < 16.0f) return;
+
             var s = state.Settings;
             float cy = top + height * 0.5f;
 
@@ -522,50 +526,16 @@ namespace OpenPixel.UI
                 return;
             }
 
-            // 4. Live Smooth Voice Wave Mode: when unmuted mic detects speech and ShowVoiceWaveBar is on,
-            // smoothly replace the resting music icon + bars with a silky 60fps curved voice wave tinted
-            // in the active music's dominant color (or theme accent).
-            if (s.ShowVoiceWaveBar && !state.GlobalMicMuted && state.MicPeakSmoothed > 0.022f)
+            // 4. Original NotchPixel Live Mic Pill: green mic icon + elapsed timer + green "Speak"
+            if (state.Sensors.MicActive || (!state.GlobalMicMuted && state.MicPeakSmoothed > 0.025f))
             {
-                float voiceAmp = Math.Clamp(MathF.Pow(state.MicPeakSmoothed * 2.4f, 0.70f), 0.10f, 1.0f);
-                Color waveCol = state.Media.HasSession ? state.Media.DominantColor : theme.Accent;
-                float padX = 16.0f;
-                float waveW = Math.Max(48.0f, width - padX * 2.0f);
-                float waveL = left + padX;
-                int segs = 32;
-                var pts1 = new PointF[segs + 1];
-                var pts2 = new PointF[segs + 1];
-                for (int k = 0; k <= segs; ++k)
-                {
-                    float u = k / (float)segs;
-                    float env = MathF.Sin(u * MathF.PI);
-                    env = env * env; // silky bell envelope tapered smoothly to 0 at both ends
-                    float s1 = MathF.Sin(u * MathF.PI * 3.0f - timeSec * 5.2f) * 0.65f
-                             + MathF.Sin(u * MathF.PI * 5.0f + timeSec * 3.4f) * 0.35f;
-                    float s2 = MathF.Cos(u * MathF.PI * 2.5f + timeSec * 4.1f) * 0.70f
-                             + MathF.Sin(u * MathF.PI * 4.5f - timeSec * 2.8f) * 0.30f;
-                    float maxH = Math.Min(height * 0.38f, 11.5f);
-                    pts1[k] = new PointF(waveL + u * waveW, cy + s1 * env * voiceAmp * maxH);
-                    pts2[k] = new PointF(waveL + u * waveW, cy + s2 * env * voiceAmp * maxH * 0.72f);
-                }
-
-                // Soft outer ambient glow + secondary harmonic wave + bright silky primary ribbon
-                using var glowPen = new Pen(Color.FromArgb((int)(90 * r.Opacity * voiceAmp), waveCol.R, waveCol.G, waveCol.B), 5.5f)
-                {
-                    StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round
-                };
-                using var secPen = new Pen(Color.FromArgb((int)(125 * r.Opacity), waveCol.R, waveCol.G, waveCol.B), 2.2f)
-                {
-                    StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round
-                };
-                using var priPen = new Pen(Color.FromArgb((int)(238 * r.Opacity),
-                    Math.Min(255, waveCol.R + 70), Math.Min(255, waveCol.G + 70), Math.Min(255, waveCol.B + 70)), 2.0f)
-                {
-                    StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round
-                };
-                r.G.DrawCurve(glowPen, pts1, 0.5f);
-                r.G.DrawCurve(secPen, pts2, 0.5f);
-                r.G.DrawCurve(priPen, pts1, 0.5f);
+                if (state.Sensors.MicCallStartMs <= 0) state.Sensors.MicCallStartMs = ConfigManager.GetTickMs();
+                Color micCol = state.GlobalMicMuted ? Color.FromArgb(255, 255, 69, 58) : Color.FromArgb(255, 48, 209, 88);
+                r.DrawLucideIcon("mic", left + 22.0f, cy, 15.0f, micCol, 1.9f);
+                string elapsed = FormatTimeSec(Math.Max(0.0, (ConfigManager.GetTickMs() - state.Sensors.MicCallStartMs) / 1000.0));
+                r.DrawTextStr(elapsed, new RectangleF(left + 38.0f, top, 72.0f, height), 12.2f, true, theme.TextPrimary, mono: true);
+                r.DrawTextStr(state.GlobalMicMuted ? "Muted" : "Speak", new RectangleF(left + width - 66.0f, top, 52.0f, height), 11.6f, true, micCol, hAlign: StringAlignment.Far);
+                r.AddHitRegion("pill-mic-mute", new RectangleF(left, top, width, height), () => WindowsSystemHooks.ToggleGlobalMicMute(state));
                 return;
             }
 
@@ -587,35 +557,56 @@ namespace OpenPixel.UI
                     r.DrawTextStr(clockText, new RectangleF(left + 36, top + 2, width - 76, height - 4), 11.5f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
                 }
             }
-            else
+            else if (s.RestingMode != RestingInfoMode.MediaOnly && s.RestingMode != RestingInfoMode.Time)
             {
                 DateTime now = DateTime.Now;
-                RestingInfoMode mode = s.RestingMode == RestingInfoMode.MediaOnly ? RestingInfoMode.Time : s.RestingMode;
-                string infoText = mode switch
+                string infoText = s.RestingMode switch
                 {
-                    RestingInfoMode.Time => s.Use24HourClock ? now.ToString("HH:mm") : now.ToString("h:mm tt"),
                     RestingInfoMode.Date => now.ToString("ddd M/d"),
                     RestingInfoMode.Weather => $"{((now.Hour < 6 || now.Hour >= 19) ? "\u263D" : "\u2600")} {s.WeatherTempC}\u00B0",
                     RestingInfoMode.Battery => $"\u26A1 {state.Telemetry.BatteryPercent}%",
                     RestingInfoMode.CpuTemp => $"CPU {(int)state.Telemetry.CpuPercent}% \u00B7 RAM {(int)state.Telemetry.RamPercent}%",
                     RestingInfoMode.NextEvent => s.UpcomingMeetingTitle,
                     RestingInfoMode.PixelPet => ((int)(timeSec * 2) % 2 == 0) ? "(\u2022\u03C9\u2022)" : "(^\u03C9^)",
-                    _ => now.ToString("h:mm tt")
+                    _ => ""
                 };
-                r.DrawTextStr(infoText, new RectangleF(left + 16, top, width - 64, height), 11.5f, true, theme.TextMuted);
+                if (!string.IsNullOrEmpty(infoText))
+                    r.DrawTextStr(infoText, new RectangleF(left + 16, top, width - 64, height), 11.5f, true, theme.TextMuted);
             }
 
-            // 5. Privacy Sensor Dots (Mic / Camera / Screen naming active app) & Call Timer
-            if (state.Sensors.MicActive || state.Sensors.CamActive || state.Sensors.ScreenActive)
+            // 5. Active Mic / Call Pill (image_3) or Active Focus Timer Pill (image_1)
+            if (state.Sensors.MicActive)
             {
-                Color dotCol = state.GlobalMicMuted ? Color.FromArgb(255, 255, 69, 58)
-                             : (state.Sensors.CamActive ? Color.FromArgb(255, 255, 159, 10) : Color.FromArgb(255, 48, 209, 88));
+                Color micCol = state.GlobalMicMuted ? Color.FromArgb(255, 255, 69, 58) : Color.FromArgb(255, 48, 209, 88);
+                r.DrawLucideIcon("mic", left + 22.0f, cy, 14.5f, micCol, 1.8f);
+                string elapsed = state.Sensors.MicCallStartMs > 0
+                    ? FormatTimeSec((ConfigManager.GetTickMs() - state.Sensors.MicCallStartMs) / 1000.0)
+                    : "0:00";
+                r.DrawTextStr(elapsed, new RectangleF(left + 36.0f, top, 66.0f, height), 11.8f, true, theme.TextPrimary, mono: true);
+                r.DrawTextStr(state.GlobalMicMuted ? "muted" : "live", new RectangleF(left + width - 56.0f, top, 42.0f, height), 11.2f, true, micCol, hAlign: StringAlignment.Far);
+                r.AddHitRegion("pill-mic-mute", new RectangleF(left, top, width, height), () => WindowsSystemHooks.ToggleGlobalMicMute(state));
+                return;
+            }
+            if (state.FocusTimerRunning && !state.Media.IsPlaying)
+            {
+                int total = Math.Max(60, state.FocusTimerTotalMin * 60);
+                float frac = Math.Clamp(state.FocusTimerRemainingSec / (float)total, 0.0f, 1.0f);
+                var miniRing = new RectangleF(left + 12.0f, cy - 7.5f, 15.0f, 15.0f);
+                using (var tp = new Pen(Color.FromArgb(60, theme.TextPrimary.R, theme.TextPrimary.G, theme.TextPrimary.B), 1.8f))
+                    r.G.DrawEllipse(tp, miniRing);
+                using (var pp = new Pen(theme.TextPrimary, 1.8f))
+                    r.G.DrawArc(pp, miniRing, -90.0f, 360.0f * frac);
+                r.FillCircle(miniRing.X + 7.5f, miniRing.Y, 1.8f, theme.TextPrimary);
+                r.DrawTextStr(FormatTimeSec(state.FocusTimerRemainingSec), new RectangleF(left + 32.0f, top, 56.0f, height), 11.2f, true, theme.TextPrimary, mono: true);
+                string fLabel = string.IsNullOrWhiteSpace(state.FocusTimerLabel) ? "focus" : state.FocusTimerLabel;
+                r.DrawTextStr(fLabel, new RectangleF(left + width - 78.0f, top, 64.0f, height), 10.6f, false, theme.TextMuted, hAlign: StringAlignment.Far);
+                return;
+            }
+            if (state.Sensors.CamActive || state.Sensors.ScreenActive)
+            {
+                Color dotCol = Color.FromArgb(255, 255, 159, 10);
                 r.FillCircle(left + width - 48, cy, 3.8f, dotCol);
-                string app = !string.IsNullOrEmpty(state.Sensors.MicAppName) ? state.Sensors.MicAppName : state.Sensors.CamAppName;
-                if (state.Sensors.MicActive && state.Sensors.MicCallStartMs > 0)
-                {
-                    app += " " + FormatTimeSec((ConfigManager.GetTickMs() - state.Sensors.MicCallStartMs) / 1000.0);
-                }
+                string app = state.Sensors.CamAppName;
                 r.DrawTextStr(app, new RectangleF(left + 40, top, width - 94, height), 10.5f, false, dotCol, mono: true, hAlign: StringAlignment.Far);
             }
 
@@ -678,20 +669,39 @@ namespace OpenPixel.UI
             LiquidGlassRenderer r, GlobalAppState state,
             float cardLeft, float cardTop, float cardWidth, ThemeSpec theme, Action onOpenSettings)
         {
-            string[] icons = { "music", "globe", "bell", "message-circle", "folder", "clipboard", "layout-grid", "sliders-horizontal", "grip-horizontal", "headphones" };
+            string[] icons = { "music", "globe", "bell", "message-circle", "folder", "clipboard", "layout-grid", "sliders-horizontal", "grip-horizontal", "headphones", "smartphone" };
             var order = state.Settings.PanelOrder;
             int count = order.Count;
-            const float spacing = 22.0f;                        // TABS[i] * 22
+            const float spacing = 21.0f;
             float tabStart = cardWidth * 0.5f - (count * spacing + 10.0f) * 0.5f;
             float tabY = cardTop + 13.0f;
             float gearX = cardLeft + tabStart + count * spacing + 10.0f;
+
+            // Top-left green (or red if muted) active mic indicator circle with hover source label
+            if (state.Sensors.MicActive)
+            {
+                Color micDotCol = state.GlobalMicMuted ? Color.FromArgb(255, 255, 69, 58) : Color.FromArgb(255, 48, 209, 88);
+                var micDotRect = new RectangleF(cardLeft + 12.0f, tabY - 7.0f, 14.0f, 14.0f);
+                r.FillCircle(micDotRect.X + 7.0f, micDotRect.Y + 7.0f, 4.2f, micDotCol);
+                r.AddHitRegion("top-mic-dot", micDotRect, () => WindowsSystemHooks.ToggleGlobalMicMute(state));
+                if (r.IsHovered(micDotRect, state.PointerDipX, state.PointerDipY))
+                {
+                    string app = string.IsNullOrWhiteSpace(state.Sensors.MicAppName) ? "Active app" : state.Sensors.MicAppName;
+                    string tip = $"Microphone, {app}";
+                    float tipW = Math.Clamp(tip.Length * 6.5f + 18.0f, 96.0f, 190.0f);
+                    var tipRect = new RectangleF(cardLeft + 12.0f, tabY + 11.0f, tipW, 20.0f);
+                    r.FillRoundedRect(tipRect, 10.0f, Color.FromArgb(242, 22, 22, 25));
+                    r.DrawRoundedRect(tipRect, 10.0f, Color.FromArgb(72, micDotCol.R, micDotCol.G, micDotCol.B), 1.0f);
+                    r.DrawTextStr(tip, tipRect, 9.2f, true, Color.White, hAlign: StringAlignment.Center);
+                }
+            }
 
             for (int i = 0; i < count; ++i)
             {
                 PanelId pid = order[i];
                 float cx = cardLeft + tabStart + i * spacing;
                 bool isActive = state.ActivePanel == pid;
-                int idx = Math.Clamp((int)pid, 0, 9);
+                int idx = Math.Clamp((int)pid, 0, icons.Length - 1);
                 // paper(1) active, paper(.4) at rest: Geist's own paper colour, not a blend
                 Color iconCol = isActive
                     ? theme.TextPrimary
@@ -1114,36 +1124,52 @@ namespace OpenPixel.UI
 
                 case PanelId.Notifications:
                 {
-                    int shown = Math.Min(3, state.Notifications.Count);
+                    int total = state.Notifications.Count;
+                    int shown = Math.Min(3, total);
                     if (shown == 0)
                     {
-                        r.DrawLucideIcon("bell", left + width * 0.5f, top + 92.0f, 22.0f, theme.TextFaint, 1.5f);
-                        r.DrawTextStr("No notifications",
-                            new RectangleF(left + 16.0f, top + 114.0f, width - 32.0f, 22.0f), 12.5f, false, theme.TextMuted, hAlign: StringAlignment.Center);
+                        r.DrawLucideIcon("bell", left + width * 0.5f, top + 96.0f, 22.0f, theme.TextFaint, 1.5f);
+                        r.DrawTextStr("No notices",
+                            new RectangleF(left + 16.0f, top + 118.0f, width - 32.0f, 22.0f), 12.5f, false, theme.TextMuted, hAlign: StringAlignment.Center);
                     }
                     else
                     {
                         for (int i = 0; i < shown; ++i)
                         {
-                            float ry = top + 28.0f + i * 52.5f;
-                            var row = new RectangleF(left + 16.0f, ry, 368.0f, 45.0f);
+                            float ry = top + 30.0f + i * 56.0f;
+                            var row = new RectangleF(left + 14.0f, ry, width - 28.0f, 50.0f);
                             var n = state.Notifications[i];
                             float nHov = EaseHover(state, $"notif-{i}", r.IsHovered(row, state.PointerDipX, state.PointerDipY));
-                            r.FillRoundedRect(row, 14.0f, Color.FromArgb((int)(20 + 16 * nHov), 255, 255, 255));
-                            r.FillRoundedRect(new RectangleF(left + 26.0f, ry + 6.5f, 32.0f, 32.0f), 10.0f, n.AccentColor);
-                            r.DrawLucideIcon("bell",
-                                left + 42.0f, ry + 22.5f, 16.0f, Color.FromArgb(255, 12, 12, 14));
-                            Color notifTitleCol = theme.IsLight ? theme.TextPrimary : Color.FromArgb(255, 255, 255, 255);
-                            Color notifBodyCol = theme.IsLight ? theme.TextMuted : Color.FromArgb(210, 245, 245, 248);
-                            r.DrawTextStr(n.Title,
-                                new RectangleF(left + 68.0f, ry + 4.0f, 240.0f, 20.0f), 13.0f, true, notifTitleCol);
-                            r.DrawTextStr(n.Body,
-                                new RectangleF(left + 68.0f, ry + 23.0f, 250.0f, 18.0f), 11.5f, false, notifBodyCol);
+                            Color cardFill = theme.IsLight
+                                ? Color.FromArgb((int)(20 + 14 * nHov), 12, 12, 14)
+                                : Color.FromArgb((int)(28 + 18 * nHov), 255, 255, 255);
+                            r.FillRoundedRect(row, 14.0f, cardFill);
+
+                            // Source app icon badge
+                            var iconRect = new RectangleF(row.X + 10.0f, row.Y + 9.0f, 32.0f, 32.0f);
+                            r.FillRoundedRect(iconRect, 9.0f, n.AccentColor);
+                            r.DrawLucideIcon("bell", iconRect.X + 16.0f, iconRect.Y + 16.0f, 15.0f,
+                                ThemeSpec.AdaptiveInkForBackground(n.AccentColor));
+
+                            string sender = string.IsNullOrWhiteSpace(n.AppName) ? n.Title : n.AppName;
+                            string summary = string.IsNullOrWhiteSpace(n.Body) ? n.Title : n.Body;
+                            r.DrawTextStr(sender, new RectangleF(iconRect.Right + 10.0f, row.Y + 6.0f, row.Width - 102.0f, 20.0f), 12.5f, true, theme.TextPrimary);
+                            r.DrawTextStr(summary, new RectangleF(iconRect.Right + 10.0f, row.Y + 26.0f, row.Width - 102.0f, 18.0f), 10.8f, false, theme.TextMuted);
+
                             string ts = s.ClockTimestampsInNotifications && !string.IsNullOrEmpty(n.TimeStr)
                                 ? n.TimeStr
                                 : (string.IsNullOrEmpty(n.RelativeStr) ? "now" : n.RelativeStr);
-                            r.DrawTextStr(ts,
-                                new RectangleF(left + 322.0f, ry + 5.0f, 52.0f, 18.0f), 10.5f, false, notifBodyCol, mono: false, hAlign: StringAlignment.Far);
+                            r.DrawTextStr(ts, new RectangleF(row.Right - 56.0f, row.Y + 7.0f, 44.0f, 16.0f), 10.0f, false, theme.TextMuted, hAlign: StringAlignment.Far);
+
+                            // Count extra notices from same sender as "+N" badge
+                            int sameSender = 0;
+                            foreach (var other in state.Notifications)
+                                if (string.Equals(other.AppName, n.AppName, StringComparison.OrdinalIgnoreCase)) sameSender++;
+                            if (sameSender > 1)
+                            {
+                                r.DrawTextStr($"+{sameSender - 1}", new RectangleF(row.Right - 46.0f, row.Y + 25.0f, 34.0f, 16.0f), 10.5f, true, theme.TextPrimary, hAlign: StringAlignment.Far);
+                            }
+
                             NotificationItem capturedNotif = n;
                             r.AddHitRegion($"notif-open-{i}", row, () =>
                             {
@@ -1152,14 +1178,13 @@ namespace OpenPixel.UI
                             });
                         }
 
-                        r.DrawTextStr($"{shown} of {state.Notifications.Count}",
-                            new RectangleF(left + 16.0f, top + 197.0f, 180.0f, 18.0f), 11.5f, false, theme.TextMuted);
-                        r.DrawTextStr("Clear all",
-                            new RectangleF(left + 300.0f, top + 196.0f, 84.0f, 20.0f), 12.5f, true, theme.TextPrimary, hAlign: StringAlignment.Far);
-                        r.AddHitRegion("notif-clear", new RectangleF(left + 300.0f, top + 192.0f, 84.0f, 26.0f), () =>
-                        {
-                            state.Notifications.Clear();
-                        });
+                        // Centered footer: "3 notices   Clear all" (image_6)
+                        string countLabel = total == 1 ? "1 notice" : $"{total} notices";
+                        float footY = top + height - 24.0f;
+                        r.DrawTextStr(countLabel, new RectangleF(left + width * 0.5f - 84.0f, footY, 76.0f, 18.0f), 10.8f, false, theme.TextMuted, hAlign: StringAlignment.Far);
+                        var clearRect = new RectangleF(left + width * 0.5f + 4.0f, footY - 2.0f, 76.0f, 22.0f);
+                        r.DrawTextStr("Clear all", clearRect, 10.8f, true, theme.TextPrimary);
+                        r.AddHitRegion("notif-clear", clearRect, () => state.Notifications.Clear());
                     }
                     break;
                 }
@@ -1207,111 +1232,98 @@ namespace OpenPixel.UI
 
                 case PanelId.Shelf:
                 {
-                    if (state.SendToPhoneQrActive)
+                    // Header: "Shelf", white pill "Send to phone", download/upload/trash icons
+                    r.DrawTextStr("Shelf", new RectangleF(bodyLeft, bodyTop - 1.0f, 54.0f, 22.0f), 14.0f, true, theme.TextPrimary);
+                    if (state.ShelfFiles.Count > 0)
                     {
-                        r.DrawQrCode(state.SendToPhoneUrl, bodyLeft + 4, bodyTop + 2, 102, Color.FromArgb(255, 12, 12, 14), Color.FromArgb(255, 239, 237, 232));
-                        r.DrawTextStr("Scan with your phone camera", new RectangleF(bodyLeft + 118, bodyTop + 6, bodyW - 118, 22), 13.5f, true, theme.TextPrimary);
-                        r.DrawTextStr("Same Wi-Fi \u00B7 No account or app needed", new RectangleF(bodyLeft + 118, bodyTop + 28, bodyW - 118, 18), 11.5f, false, theme.TextMuted);
-                        r.DrawTextStr(state.SendToPhoneUrl, new RectangleF(bodyLeft + 118, bodyTop + 50, bodyW - 118, 20), 10.5f, false, theme.Accent, mono: true);
-                        var backBtn = new RectangleF(bodyLeft + 118, bodyTop + 76, 100, 28);
-                        r.FillRoundedRect(backBtn, 12, Color.FromArgb(30, 255, 255, 255));
-                        r.DrawTextStr("\u2190 Back", backBtn, 11.5f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
-                        r.AddHitRegion("shelf-back", backBtn, () => state.SendToPhoneQrActive = false);
+                        r.DrawTextStr($"\u00B7 {state.ShelfFiles.Count} files", new RectangleF(bodyLeft + 46.0f, bodyTop + 1.0f, 92.0f, 19.0f), 11.5f, false, theme.TextMuted);
+                    }
+
+                    var phoneBtn = new RectangleF(bodyLeft + bodyW - 158.0f, bodyTop - 2.0f, 126.0f, 24.0f);
+                    r.FillRoundedRect(phoneBtn, 12.0f, Color.FromArgb(255, 242, 242, 245));
+                    r.DrawLucideIcon("smartphone", phoneBtn.X + 16.0f, phoneBtn.Y + 12.0f, 12.0f, Color.FromArgb(255, 16, 16, 18));
+                    r.DrawTextStr("Send to phone", new RectangleF(phoneBtn.X + 26.0f, phoneBtn.Y, 94.0f, 24.0f), 10.8f, true, Color.FromArgb(255, 16, 16, 18));
+                    r.AddHitRegion("shelf-phone", phoneBtn, () =>
+                    {
+                        state.SendToPhoneUrl = $"http://{state.LocalPrivateIp}:{s.PcDeckPort}/shelf";
+                        state.SendToPhoneQrActive = true;
+                        PhoneTransferQrWindow.ShowFor(state);
+                    });
+
+                    r.DrawLucideIcon("download", bodyLeft + bodyW - 18.0f, bodyTop + 10.0f, 14.5f, theme.TextMuted);
+                    if (state.ShelfFiles.Count > 0)
+                    {
+                        r.AddHitRegion("shelf-clr", new RectangleF(bodyLeft + bodyW - 28.0f, bodyTop - 2.0f, 24.0f, 24.0f), () => state.ShelfFiles.Clear());
+                    }
+
+                    if (state.ShelfFiles.Count == 0)
+                    {
+                        var dropZone = new RectangleF(bodyLeft, bodyTop + 34.0f, bodyW, 82.0f);
+                        r.FillRoundedRect(dropZone, 14.0f, Color.FromArgb(14, 255, 255, 255));
+                        using (var dashPen = new Pen(Color.FromArgb(72, theme.TextMuted.R, theme.TextMuted.G, theme.TextMuted.B), 1.2f) { DashStyle = DashStyle.Dash })
+                        using (var dp = RoundedRectPath(dropZone, 14.0f))
+                        {
+                            r.G.DrawPath(dashPen, dp);
+                        }
+                        r.DrawLucideIcon("download", dropZone.X + 122.0f, dropZone.Y + 28.0f, 16.0f, theme.TextMuted);
+                        r.DrawTextStr("Drop files here", new RectangleF(dropZone.X + 112.0f, dropZone.Y + 40.0f, dropZone.Width - 124.0f, 20.0f), 12.2f, true, theme.TextPrimary);
+                        r.DrawTextStr("They wait here until you need them", new RectangleF(dropZone.X + 112.0f, dropZone.Y + 58.0f, dropZone.Width - 124.0f, 18.0f), 10.2f, false, theme.TextMuted);
                     }
                     else
                     {
-                        // Header: regular "Shelf", bold count, spacious Send-to-phone pill, three icons
-                        r.DrawTextStr("Shelf", new RectangleF(bodyLeft, bodyTop - 1.0f, 54.0f, 22.0f), 14.5f, false, theme.TextPrimary);
-                        r.DrawTextStr($"\u00B7 {state.ShelfFiles.Count} files", new RectangleF(bodyLeft + 44.0f, bodyTop + 1.0f, 96.0f, 19.0f), 12.5f, true,
-                            Color.FromArgb(228, theme.TextPrimary.R, theme.TextPrimary.G, theme.TextPrimary.B));
-
-                        // When a phone is already paired & Deck is ON, Shelf syncs directly to the phone
-                        // so hide the redundant "Send to phone" button.
-                        bool phoneConnected = s.PcDeckEnabled && state.PairedDeckDevices.Count > 0;
-                        if (!phoneConnected)
+                        int visCount = Math.Min(5, state.ShelfFiles.Count);
+                        for (int i = 0; i < visCount; ++i)
                         {
-                            var phoneBtn = new RectangleF(bodyLeft + 162.0f, bodyTop - 1.0f, 124.0f, 22.0f);
-                            r.FillRoundedRect(phoneBtn, 11.0f, theme.TextPrimary);
-                            r.DrawLucideIcon("smartphone", phoneBtn.X + 19.0f, phoneBtn.Y + 11.0f, 12.5f, Color.FromArgb(255, 16, 16, 18));
-                            r.DrawTextStr("Send to phone", new RectangleF(phoneBtn.X + 28.0f, phoneBtn.Y, 92.0f, 22.0f), 11.5f, false, Color.FromArgb(255, 16, 16, 18));
-                            r.AddHitRegion("shelf-phone", phoneBtn, () =>
+                            var f = state.ShelfFiles[i];
+                            float cx = bodyLeft + 36.0f + i * 74.0f;
+                            var tile = new RectangleF(cx - 30.0f, bodyTop + 30.0f, 60.0f, 60.0f);
+                            if (f.Selected)
+                                r.FillRoundedRect(tile, 10.0f, Color.FromArgb(46, 255, 255, 255));
+
+                            string ext = (f.Extension ?? "").TrimStart('.').ToUpperInvariant();
+                            bool isImageFile = ext is "PNG" or "JPG" or "JPEG" or "WEBP" or "BMP" or "GIF";
+                            Bitmap? realThumb = isImageFile ? LoadShelfImageThumb(f.FullPath) : null;
+                            Bitmap? richArt = Art(ShelfTileArt(ext));
+                            if (realThumb != null)
                             {
-                                state.SendToPhoneUrl = $"http://{state.LocalPrivateIp}:{s.PcDeckPort}/shelf";
-                                state.SendToPhoneQrActive = true;
-                            });
-                        }
-
-                        r.DrawLucideIcon("download", bodyLeft + 307.0f, bodyTop + 10.0f, 14.5f, theme.TextMuted);
-                        r.DrawLucideIcon("upload", bodyLeft + 335.0f, bodyTop + 10.0f, 14.5f, theme.TextMuted);
-                        r.DrawLucideIcon("trash", bodyLeft + 360.0f, bodyTop + 10.0f, 14.5f, theme.TextMuted);
-                        r.AddHitRegion("shelf-clr", new RectangleF(bodyLeft + 344.0f, bodyTop - 2.0f, 32.0f, 24.0f), () => state.ShelfFiles.Clear());
-
-                        if (state.ShelfFiles.Count == 0)
-                        {
-                            var dropZone = new RectangleF(bodyLeft, bodyTop + 40.0f, bodyW, 70.0f);
-                            r.FillRoundedRect(dropZone, 12.0f, Color.FromArgb(14, 255, 255, 255));
-                            r.DrawRoundedRect(dropZone, 12.0f, theme.Edge, 1.0f);
-                            r.DrawTextStr("Drop up to 12 files here to hold, drag out, or send to your phone",
-                                dropZone, 11.5f, false, theme.TextFaint, hAlign: StringAlignment.Center, noWrap: false);
-                        }
-                        else
-                        {
-                            int visCount = Math.Min(5, state.ShelfFiles.Count);
-                            for (int i = 0; i < visCount; ++i)
+                                var prevTransform = r.G.Transform;
+                                r.G.TranslateTransform(cx, bodyTop + 60.0f);
+                                r.G.RotateTransform(-2.5f);
+                                r.FillRoundedRect(new RectangleF(-26.0f, -27.0f, 52.0f, 54.0f), 4.0f, Color.FromArgb(255, 245, 243, 238));
+                                r.G.DrawImage(realThumb, -22.5f, -23.5f, 45.0f, 38.0f);
+                                r.G.Transform = prevTransform;
+                            }
+                            else if (richArt != null)
                             {
-                                var f = state.ShelfFiles[i];
-                                float cx = bodyLeft + 36.0f + i * 74.0f;
-                                var tile = new RectangleF(cx - 30.0f, bodyTop + 30.0f, 60.0f, 60.0f);
-                                if (f.Selected)
-                                    r.FillRoundedRect(tile, 10.0f, Color.FromArgb(46, 255, 255, 255));
-
-                                string ext = (f.Extension ?? "").TrimStart('.').ToUpperInvariant();
-                                bool isImageFile = ext is "PNG" or "JPG" or "JPEG" or "WEBP" or "BMP" or "GIF";
-                                Bitmap? realThumb = isImageFile ? LoadShelfImageThumb(f.FullPath) : null;
-                                Bitmap? richArt = Art(ShelfTileArt(ext));
-                                if (realThumb != null)
+                                r.G.DrawImage(richArt, tile.X, tile.Y, tile.Width, tile.Height);
+                            }
+                            else
+                            {
+                                Bitmap ico = AppIcons.ForShortcut(f.FullPath);
+                                if (ico != null)
                                 {
-                                    // Draw the user's actual image inside the white tilted Polaroid frame
-                                    var prevTransform = r.G.Transform;
-                                    r.G.TranslateTransform(cx, bodyTop + 60.0f);
-                                    r.G.RotateTransform(-2.5f);
-                                    r.FillRoundedRect(new RectangleF(-26.0f, -27.0f, 52.0f, 54.0f), 4.0f, Color.FromArgb(255, 245, 243, 238));
-                                    r.G.DrawImage(realThumb, -22.5f, -23.5f, 45.0f, 38.0f);
-                                    r.G.Transform = prevTransform;
-                                }
-                                else if (richArt != null)
-                                {
-                                    // Filmstrip (.mp4/.mov/.mkv), Vinyl (.mp3/.wav/.flac), PDF, ZIP, or Polaroid art
-                                    r.G.DrawImage(richArt, tile.X, tile.Y, tile.Width, tile.Height);
+                                    r.FillRoundedRect(tile, 10.0f, Color.FromArgb(20, 255, 255, 255));
+                                    try { r.G.DrawImage(ico, tile.X + 12.0f, tile.Y + 12.0f, 36.0f, 36.0f); } catch { }
                                 }
                                 else
                                 {
-                                    Bitmap ico = AppIcons.ForShortcut(f.FullPath);
-                                    if (ico != null)
-                                    {
-                                        r.FillRoundedRect(tile, 10.0f, Color.FromArgb(20, 255, 255, 255));
-                                        try { r.G.DrawImage(ico, tile.X + 12.0f, tile.Y + 12.0f, 36.0f, 36.0f); } catch { }
-                                    }
-                                    else
-                                    {
-                                        r.FillRoundedRect(tile, 10.0f, Color.FromArgb(20, 255, 255, 255));
-                                        DrawShelfThumb(r, tile, ext);
-                                    }
+                                    r.FillRoundedRect(tile, 10.0f, Color.FromArgb(20, 255, 255, 255));
+                                    DrawShelfThumb(r, tile, ext);
                                 }
-
-                                r.DrawTextStr(MiddleEllipsis(f.DisplayName, 11), new RectangleF(cx - 36.0f, bodyTop + 96.0f, 72.0f, 18.0f), 10.5f, false,
-                                    Color.FromArgb(228, theme.TextPrimary.R, theme.TextPrimary.G, theme.TextPrimary.B), hAlign: StringAlignment.Center);
-                                int idx = i;
-                                r.AddHitRegion($"shelf-{i}", new RectangleF(cx - 37.0f, bodyTop + 28.0f, 74.0f, 90.0f),
-                                    () => state.ShelfFiles[idx].Selected = !state.ShelfFiles[idx].Selected);
                             }
 
-                            if (state.ShelfFiles.Count > 5)
-                            {
-                                r.FillCircle(bodyLeft + 357.0f, bodyTop + 60.0f, 14.0f, Color.FromArgb(235, 36, 36, 38));
-                                r.DrawCircle(bodyLeft + 357.0f, bodyTop + 60.0f, 14.0f, Color.FromArgb(38, 255, 255, 255), 1.0f);
-                                r.DrawLucideIcon("chevron-right", bodyLeft + 357.0f, bodyTop + 60.0f, 13.0f, theme.TextPrimary);
-                            }
+                            r.DrawTextStr(MiddleEllipsis(f.DisplayName, 11), new RectangleF(cx - 36.0f, bodyTop + 96.0f, 72.0f, 18.0f), 10.5f, false,
+                                Color.FromArgb(228, theme.TextPrimary.R, theme.TextPrimary.G, theme.TextPrimary.B), hAlign: StringAlignment.Center);
+                            int idx = i;
+                            r.AddHitRegion($"shelf-{i}", new RectangleF(cx - 37.0f, bodyTop + 28.0f, 74.0f, 90.0f),
+                                () => state.ShelfFiles[idx].Selected = !state.ShelfFiles[idx].Selected);
+                        }
+
+                        if (state.ShelfFiles.Count > 5)
+                        {
+                            r.FillCircle(bodyLeft + 357.0f, bodyTop + 60.0f, 14.0f, Color.FromArgb(235, 36, 36, 38));
+                            r.DrawCircle(bodyLeft + 357.0f, bodyTop + 60.0f, 14.0f, Color.FromArgb(38, 255, 255, 255), 1.0f);
+                            r.DrawLucideIcon("chevron-right", bodyLeft + 357.0f, bodyTop + 60.0f, 13.0f, theme.TextPrimary);
                         }
                     }
                     break;
@@ -1319,33 +1331,47 @@ namespace OpenPixel.UI
 
                 case PanelId.Clipboard:
                 {
-                    (string label, float x, float w)[] chips =
+                    (string label, ClipboardCategory cat, float w)[] chips =
                     {
-                        ("All", 16.0f, 32.0f), ("Text", 52.0f, 41.0f), ("Links", 98.0f, 45.0f),
-                        ("Images", 148.0f, 55.0f), ("Files", 208.0f, 42.0f), ("Snippets", 254.0f, 65.0f)
+                        ("All",      ClipboardCategory.All,      36.0f),
+                        ("Text",     ClipboardCategory.Text,     44.0f),
+                        ("Images",   ClipboardCategory.Images,   58.0f),
+                        ("Snippets", ClipboardCategory.Snippets, 68.0f)
                     };
+                    float chipX = bodyLeft;
                     for (int c = 0; c < chips.Length; ++c)
                     {
-                        var chip = new RectangleF(bodyLeft - 16.0f + chips[c].x, bodyTop - 2.0f, chips[c].w, 22.0f);
-                        bool act = (int)state.ActiveClipCat == c;
+                        var chip = new RectangleF(chipX, bodyTop - 2.0f, chips[c].w, 22.0f);
+                        bool act = state.ActiveClipCat == chips[c].cat;
                         r.FillRoundedRect(chip, 11.0f, act ? theme.TextPrimary : Color.FromArgb(24, 255, 255, 255));
-                        r.DrawTextStr(chips[c].label, chip, 11.5f, false,
+                        r.DrawTextStr(chips[c].label, chip, 11.0f, act,
                             act ? Color.FromArgb(255, 16, 16, 18) : Color.FromArgb(215, theme.TextPrimary.R, theme.TextPrimary.G, theme.TextPrimary.B),
                             hAlign: StringAlignment.Center);
-                        int capC = c;
-                        r.AddHitRegion($"clip-c-{c}", chip, () => state.ActiveClipCat = (ClipboardCategory)capC);
+                        ClipboardCategory capCat = chips[c].cat;
+                        r.AddHitRegion($"clip-c-{c}", chip, () =>
+                        {
+                            state.ActiveClipCat = capCat;
+                            state.ClipboardScrollOffset = 0;
+                        });
+                        chipX += chips[c].w + 6.0f;
                     }
 
-                    r.DrawTextStr("Clear", new RectangleF(bodyLeft + 312.0f, bodyTop, 56.0f, 18.0f), 11.5f, false, theme.TextMuted, hAlign: StringAlignment.Far);
-                    r.AddHitRegion("clip-clear", new RectangleF(bodyLeft + 312.0f, bodyTop - 2.0f, 56.0f, 24.0f),
-                        () => state.ClipboardHistory.RemoveAll(e => !e.IsPinned));
+                    r.DrawTextStr("Clear", new RectangleF(bodyLeft + bodyW - 76.0f, bodyTop, 46.0f, 18.0f), 11.0f, false, theme.TextMuted, hAlign: StringAlignment.Far);
+                    r.AddHitRegion("clip-clear", new RectangleF(bodyLeft + bodyW - 76.0f, bodyTop - 2.0f, 48.0f, 24.0f),
+                        () => { state.ClipboardHistory.RemoveAll(e => !e.IsPinned); state.ClipboardScrollOffset = 0; });
+                    r.DrawLucideIcon("layout-grid", bodyLeft + bodyW - 14.0f, bodyTop + 9.0f, 13.0f, theme.TextMuted);
 
-                    var shown = new List<ClipboardEntry>();
+                    var filtered = new List<ClipboardEntry>();
                     foreach (var entry in state.ClipboardHistory)
                     {
                         if (state.ActiveClipCat != ClipboardCategory.All && entry.Category != state.ActiveClipCat) continue;
-                        shown.Add(entry);
-                        if (shown.Count == 3) break;
+                        filtered.Add(entry);
+                    }
+                    if (state.ClipboardScrollOffset >= filtered.Count) state.ClipboardScrollOffset = 0;
+                    var shown = new List<ClipboardEntry>();
+                    for (int k = state.ClipboardScrollOffset; k < filtered.Count && shown.Count < 3; ++k)
+                    {
+                        shown.Add(filtered[k]);
                     }
 
                     for (int i = 0; i < shown.Count; ++i)
@@ -1384,9 +1410,9 @@ namespace OpenPixel.UI
                         r.DrawTextStr(headLabel, new RectangleF(cx + 25.0f, card.Y, 54.0f, 26.0f), 12.0f, false, headInk);
 
                         long age = item.TimestampMs > 0 ? Math.Max(0, (ConfigManager.GetTickMs() - item.TimestampMs) / 1000) : -1;
-                        string when = age < 0 ? "" : age < 60 ? "now" : age < 3600 ? $"{age / 60}m" : $"{age / 3600}h";
-                        r.DrawTextStr(when, new RectangleF(cx + 76.0f, card.Y, 30.0f, 26.0f), 11.0f, false,
-                            Color.FromArgb(215, 255, 255, 255), hAlign: StringAlignment.Far);
+                        string when = age < 0 ? "" : age < 60 ? "\u2022 Now" : age < 3600 ? $"{age / 60}m" : $"{age / 3600}h";
+                        r.DrawTextStr(when, new RectangleF(cx + 66.0f, card.Y, 42.0f, 26.0f), 10.5f, age >= 0 && age < 60,
+                            Color.FromArgb(230, 255, 255, 255), hAlign: StringAlignment.Far);
 
                         string imageDims = "Image";
                         if (item.Category == ClipboardCategory.Images)
@@ -1478,14 +1504,33 @@ namespace OpenPixel.UI
                         r.DrawTextStr(footer, new RectangleF(cx + 10.0f, card.Bottom - 18.0f, 98.0f, 15.0f), 11.0f, false,
                             item.Category == ClipboardCategory.Images ? theme.TextPrimary : theme.TextMuted);
 
+                        if (item.IsCurrent)
+                        {
+                            r.DrawRoundedRect(card, 14.0f, Color.FromArgb(235, 245, 245, 247), 1.4f);
+                        }
+
                         int capI = i;
                         r.AddHitRegion($"clip-row-{i}", card, () =>
                         {
                             foreach (var e in state.ClipboardHistory) e.IsCurrent = false;
                             if (capI < shown.Count)
                             {
-                                shown[capI].IsCurrent = true;
-                                try { Clipboard.SetText(shown[capI].Text); } catch { }
+                                var chosen = shown[capI];
+                                chosen.IsCurrent = true;
+                                try
+                                {
+                                    WindowsSystemHooks.SuppressNextClipboardUpdate(1200);
+                                    if (chosen.Category == ClipboardCategory.Images && !string.IsNullOrEmpty(chosen.ImagePath) && File.Exists(chosen.ImagePath))
+                                    {
+                                        using var img = Image.FromFile(chosen.ImagePath);
+                                        Clipboard.SetImage(img);
+                                    }
+                                    else if (!string.IsNullOrEmpty(chosen.Text))
+                                    {
+                                        Clipboard.SetText(chosen.Text);
+                                    }
+                                }
+                                catch { }
                             }
                         });
                     }
@@ -1496,201 +1541,115 @@ namespace OpenPixel.UI
                         r.FillRoundedRect(emptyClip, 14.0f, Color.FromArgb(14, 255, 255, 255));
                         r.DrawTextStr("Nothing copied yet \u00B7 Press Ctrl+C in any app", emptyClip, 12.5f, false, theme.TextFaint, hAlign: StringAlignment.Center);
                     }
-                    else
+                    else if (filtered.Count > 3)
                     {
-                        // The demo's chevron is already baked into the image card's own
-                        // photograph, so it is drawn only for the text/file cards.
-                        float chevX = bodyLeft + 357.0f, chevY = bodyTop + 92.0f;
-                        if (shown[0].Category != ClipboardCategory.Images)
+                        float chevX = bodyLeft + bodyW - 14.0f, chevY = bodyTop + 92.0f;
+                        var chevRect = new RectangleF(chevX - 15.0f, chevY - 15.0f, 30.0f, 30.0f);
+                        r.FillCircle(chevX, chevY, 15.0f, Color.FromArgb(238, 34, 34, 38));
+                        r.DrawCircle(chevX, chevY, 15.0f, Color.FromArgb(46, 255, 255, 255), 1.0f);
+                        r.DrawLucideIcon("chevron-right", chevX, chevY, 15.0f, theme.TextPrimary);
+                        r.AddHitRegion("clip-next", chevRect, () =>
                         {
-                            r.FillCircle(chevX, chevY, 15.0f, Color.FromArgb(240, 30, 30, 32));
-                            r.DrawLucideIcon("chevron-right", chevX, chevY, 16.0f, theme.TextPrimary);
-                        }
+                            state.ClipboardScrollOffset = (state.ClipboardScrollOffset + 1) % filtered.Count;
+                        });
                     }
                     break;
                 }
 
                 case PanelId.Widgets:
                 {
-                    // ========================================================
-                    // TAB 07: WIDGETS & BUILT-IN CALENDAR IN THE ISLAND (0.5.92)
-                    // ========================================================
-                    if (state.ShowCalendarInIsland)
+                    if (state.ShowRemindersInWidgets)
                     {
-                        DateTime now = DateTime.Now.AddMonths(state.CalendarMonthOffset);
-                        r.DrawTextStr(now.ToString("MMMM yyyy"),
-                            new RectangleF(bodyLeft, bodyTop - 1, 152, 22), 13.5f, true, theme.Accent);
-
-                        // Clean < and > month navigation pills
-                        var prevMo = new RectangleF(bodyLeft + 150, bodyTop, 22, 21);
-                        var nextMo = new RectangleF(bodyLeft + 175, bodyTop, 22, 21);
-                        r.FillRoundedRect(prevMo, 7, Color.FromArgb(24, 255, 255, 255));
-                        r.FillRoundedRect(nextMo, 7, Color.FromArgb(24, 255, 255, 255));
-                        r.DrawTextStr("\u2039", prevMo, 13.0f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
-                        r.DrawTextStr("\u203A", nextMo, 13.0f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
-                        r.AddHitRegion("cal-prev", prevMo, () => state.CalendarMonthOffset--);
-                        r.AddHitRegion("cal-next", nextMo, () => state.CalendarMonthOffset++);
-
-                        var backBtn = new RectangleF(bodyLeft + bodyW - 76, bodyTop, 76, 21);
-                        r.FillRoundedRect(backBtn, 8, Color.FromArgb(26, 255, 255, 255));
-                        r.DrawTextStr("\u2190 Back", backBtn, 10.5f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
-                        r.AddHitRegion("cal-back", backBtn, () => state.ShowCalendarInIsland = false);
-
-                        float gridLeft = bodyLeft;
-                        float cellW = 28.5f;
-                        float cellH = 18.5f;
-                        string[] dow = { "M", "T", "W", "T", "F", "S", "S" };
-                        for (int d = 0; d < 7; ++d)
+                        // In-island Reminders manager synced with NotchPixel Deck
+                        r.DrawTextStr("Reminders", new RectangleF(bodyLeft, bodyTop, 140, 22), 13.0f, true, theme.TextPrimary);
+                        var addRemBtn = new RectangleF(bodyLeft + bodyW - 122, bodyTop, 56, 22);
+                        r.FillRoundedRect(addRemBtn, 11, theme.TextPrimary);
+                        r.DrawTextStr("+ Add", addRemBtn, 10.0f, true, ThemeSpec.AdaptiveInkForBackground(theme.TextPrimary), hAlign: StringAlignment.Center);
+                        r.AddHitRegion("rem-add", addRemBtn, () =>
                         {
-                            Color dowCol = d >= 5 ? Color.FromArgb(165, theme.Accent.R, theme.Accent.G, theme.Accent.B) : theme.TextFaint;
-                            r.DrawTextStr(dow[d], new RectangleF(gridLeft + d * cellW, bodyTop + 24, cellW, 15), 9.0f, true, dowCol, hAlign: StringAlignment.Center);
-                        }
-
-                        DateTime firstDay = new(now.Year, now.Month, 1);
-                        int startDow = ((int)firstDay.DayOfWeek + 6) % 7; // Monday-first
-                        int daysInMonth = DateTime.DaysInMonth(now.Year, now.Month);
-                        int todayDay = (state.CalendarMonthOffset == 0) ? DateTime.Now.Day : -1;
-
-                        for (int day = 1; day <= daysInMonth; ++day)
-                        {
-                            int slot = startDow + day - 1;
-                            int col = slot % 7;
-                            int row = slot / 7;
-                            if (row >= 6) break;
-                            float cx = gridLeft + col * cellW + cellW * 0.5f;
-                            float cy = bodyTop + 40 + row * cellH + cellH * 0.5f;
-                            var cRect = new RectangleF(gridLeft + col * cellW, bodyTop + 40 + row * cellH, cellW, cellH);
-                            bool isToday = day == todayDay;
-                            if (isToday)
+                            string txt = TextPromptForm.Ask("New reminder", "What should NotchPixel remind you about?", "");
+                            if (!string.IsNullOrWhiteSpace(txt))
                             {
-                                r.FillCircle(cx, cy, 8.2f, theme.Accent);
+                                state.Reminders.Add(new ReminderItem
+                                {
+                                    Id = ConfigManager.GetTickMs(),
+                                    Title = txt.Trim(),
+                                    DueTimestampMs = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeMilliseconds()
+                                });
+                                ConfigManager.FlushPersistentCollectionsIfChanged(state);
                             }
-                            Color dayCol = isToday
-                                ? ThemeSpec.AdaptiveInkForBackground(theme.Accent)
-                                : (col >= 5 ? theme.TextMuted : theme.TextPrimary);
-                            r.DrawTextStr(day.ToString(), cRect, 9.5f, isToday, dayCol, hAlign: StringAlignment.Center);
-                        }
+                        });
+                        var backBtn = new RectangleF(bodyLeft + bodyW - 60, bodyTop, 60, 22);
+                        r.FillRoundedRect(backBtn, 11, Color.FromArgb(26, 255, 255, 255));
+                        r.DrawTextStr("\u2190 Back", backBtn, 10.0f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
+                        r.AddHitRegion("rem-back", backBtn, () => state.ShowRemindersInWidgets = false);
 
-                        float rightX = bodyLeft + 206.0f;
-                        float rightW = bodyW - 206.0f;
-                        var evtCard = new RectangleF(rightX, bodyTop + 26, rightW, 74);
-                        r.FillRoundedRect(evtCard, 12, Color.FromArgb(20, 255, 255, 255));
-                        r.DrawTextStr("Upcoming", new RectangleF(rightX + 10, bodyTop + 32, rightW - 20, 18), 11.0f, true, theme.Accent);
-                        string evtLine = state.Reminders.Count > 0 ? $"\u23F0 {state.Reminders[0].Title}" : s.UpcomingMeetingTitle;
-                        r.DrawTextStr(evtLine, new RectangleF(rightX + 10, bodyTop + 52, rightW - 20, 42), 10.5f, false, theme.TextMuted, noWrap: false);
-
-                        var pinDayClockBtn = new RectangleF(rightX, bodyTop + 108, rightW, 34);
-                        r.FillRoundedRect(pinDayClockBtn, 11, theme.Accent);
-                        r.DrawTextStr("Pin Calendar Widget", pinDayClockBtn, 10.5f, true, ThemeSpec.AdaptiveInkForBackground(theme.Accent), hAlign: StringAlignment.Center);
-                        r.AddHitRegion("cal-pin-dayclock", pinDayClockBtn, () => onToggleDesktopWidget?.Invoke(WidgetType.Calendar));
-                        break;
-                    }
-
-                    // The hero capture: clock, to-do, weather and battery cards over a
-                    // two-by-two grid with the reminder bell sitting in the cross.
-                    DateTime dt = DateTime.Now;
-                    float tileW = 180.0f;
-                    float topH = 62.0f;
-                    float botY = bodyTop + 70.0f;
-                    float botH = 69.0f;
-
-                    // Clock + world clock line (exact match to notchpixel.com widgets.webp)
-                    var t0 = new RectangleF(bodyLeft, bodyTop, tileW, topH);
-                    r.FillRoundedRect(t0, 14.0f, Color.FromArgb(24, 255, 255, 255));
-                    string time = s.Use24HourClock ? dt.ToString("HH:mm") : dt.ToString("h:mm");
-                    r.DrawTextStr(time, new RectangleF(t0.X + 10.0f, t0.Y + 3.0f, 96.0f, 30.0f), 23.0f, true, theme.TextPrimary);
-                    if (!s.Use24HourClock)
-                    {
-                        float ampmX = t0.X + (time.Length >= 5 ? 96.0f : 80.0f);
-                        r.DrawTextStr(dt.ToString("tt").ToUpperInvariant(), new RectangleF(ampmX, t0.Y + 14.0f, 34.0f, 16.0f), 10.0f, true, theme.TextMuted);
-                    }
-                    r.DrawTextStr(dt.ToString("ddd").ToUpperInvariant(), new RectangleF(t0.Right - 46.0f, t0.Y + 8.0f, 34.0f, 16.0f), 11.5f, false, theme.TextPrimary, hAlign: StringAlignment.Far);
-                    r.DrawLucideIcon("globe", t0.X + 18.0f, t0.Bottom - 15.0f, 13.0f, theme.TextMuted);
-                    string worldCity = string.IsNullOrWhiteSpace(s.WorldClockCity) ? "Tokyo" : s.WorldClockCity;
-                    DateTime worldDt = DateTime.UtcNow.AddHours(s.WorldClockOffsetHours);
-                    string worldTime = s.Use24HourClock ? worldDt.ToString("HH:mm") : worldDt.ToString("h:mm tt");
-                    r.DrawTextStr(worldCity, new RectangleF(t0.X + 28.0f, t0.Bottom - 24.0f, 76.0f, 18.0f), 12.5f, false, theme.TextPrimary);
-                    r.DrawTextStr(worldTime, new RectangleF(t0.Right - 82.0f, t0.Bottom - 24.0f, 70.0f, 18.0f), 12.5f, false, theme.TextPrimary, hAlign: StringAlignment.Far);
-                    r.AddHitRegion("w-cal-open", t0, () => state.ShowCalendarInIsland = true);
-
-                    // To-do (real items, tapped to tick off)
-                    var t1 = new RectangleF(bodyLeft + tileW + 8.0f, bodyTop, tileW, topH);
-                    r.FillRoundedRect(t1, 14.0f, Color.FromArgb(24, 255, 255, 255));
-                    r.DrawTextStr("To do", new RectangleF(t1.X + 14.0f, t1.Y + 6.0f, 44.0f, 18.0f), 13.0f, true, theme.TextPrimary);
-                    r.DrawTextStr(state.TodoList.Count.ToString(), new RectangleF(t1.X + 54.0f, t1.Y + 6.0f, 24.0f, 18.0f), 13.0f, false, theme.TextPrimary);
-                    float plusCx = t1.Right - 20.0f, plusCy = t1.Y + 16.0f;
-                    r.FillCircle(plusCx, plusCy, 10.5f, Color.FromArgb(24, 255, 255, 255));
-                    r.DrawLucideIcon("plus", plusCx, plusCy, 11.0f, theme.TextMuted);
-                    r.AddHitRegion("w-todo-add", new RectangleF(plusCx - 12, plusCy - 12, 24, 24), () => onToggleDesktopWidget?.Invoke(WidgetType.TodoList));
-
-                    int rowCount = Math.Min(2, state.TodoList.Count);
-                    if (rowCount == 0)
-                    {
-                        r.DrawTextStr("Nothing planned", new RectangleF(t1.X + 14.0f, t1.Y + 28.0f, t1.Width - 28.0f, 18.0f), 12.5f, false, theme.TextFaint);
-                    }
-                    for (int i = 0; i < rowCount; ++i)
-                    {
-                        TodoItem todo = state.TodoList[i];
-                        float ty = t1.Y + 26.0f + i * 17.5f;
-                        if (todo.Done)
+                        if (state.Reminders.Count == 0)
                         {
-                            r.FillCircle(t1.X + 20.0f, ty + 6.0f, 5.8f, theme.Accent);
-                            r.DrawLucideIcon("check", t1.X + 20.0f, ty + 6.0f, 8.5f, Color.FromArgb(255, 12, 12, 14), 2.0f);
+                            var emptyBox = new RectangleF(bodyLeft, bodyTop + 34, bodyW, 92);
+                            r.FillRoundedRect(emptyBox, 14, Color.FromArgb(18, 255, 255, 255));
+                            r.DrawTextStr("No reminders yet \u00B7 Synced with NotchPixel Deck", emptyBox, 11.0f, false, theme.TextMuted, hAlign: StringAlignment.Center);
                         }
                         else
                         {
-                            r.DrawCircle(t1.X + 20.0f, ty + 6.0f, 5.5f, Color.FromArgb(128, 255, 255, 255), 1.4f);
+                            int remShown = Math.Min(3, state.Reminders.Count);
+                            for (int ri = 0; ri < remShown; ++ri)
+                            {
+                                var rem = state.Reminders[ri];
+                                var rowR = new RectangleF(bodyLeft, bodyTop + 30 + ri * 36, bodyW, 31);
+                                r.FillRoundedRect(rowR, 10, Color.FromArgb(22, 255, 255, 255));
+                                r.DrawLucideIcon("bell", rowR.X + 14, rowR.Y + 15.5f, 12.0f, theme.Accent);
+                                r.DrawTextStr(rem.Title, new RectangleF(rowR.X + 28, rowR.Y + 6, rowR.Width - 64, 18), 11.0f, false, theme.TextPrimary);
+                                var delR = new RectangleF(rowR.Right - 28, rowR.Y + 5, 22, 21);
+                                r.DrawTextStr("\u00D7", delR, 12.5f, false, theme.TextMuted, hAlign: StringAlignment.Center);
+                                int capR = ri;
+                                r.AddHitRegion($"rem-del-{ri}", delR, () =>
+                                {
+                                    if (capR < state.Reminders.Count)
+                                    {
+                                        state.Reminders.RemoveAt(capR);
+                                        ConfigManager.FlushPersistentCollectionsIfChanged(state);
+                                    }
+                                });
+                            }
                         }
-                        r.DrawTextStr(todo.Text, new RectangleF(t1.X + 32.0f, ty - 2.5f, t1.Width - 44.0f, 17.0f), 12.5f, false, theme.TextPrimary);
-                        int capT = i;
-                        r.AddHitRegion($"w-todo-{i}", new RectangleF(t1.X + 10.0f, ty - 4.0f, t1.Width - 20.0f, 19.0f),
-                            () => state.TodoList[capT].Done = !state.TodoList[capT].Done);
+                        break;
                     }
 
-                    // Weather: warm amber-gold sun gradient into deep slate-blue (exact match to widgets.webp)
-                    var t2 = new RectangleF(bodyLeft, botY, tileW, botH);
-                    using (var wPath = RoundedRectPath(t2, 14.0f))
-                    using (var wGrad = new LinearGradientBrush(t2, Color.FromArgb(225, 138, 96, 22), Color.FromArgb(235, 24, 36, 52), 18.0f))
+                    // 2x2 Island Widgets Grid driven by Settings -> Widgets (up to 4 selected)
+                    // Today widget is display-only (never launches external Calendar).
+                    var chosen = (s.IslandWidgets != null && s.IslandWidgets.Count > 0)
+                        ? s.IslandWidgets
+                        : new List<string> { "calendar", "focus", "weather", "stats" };
+
+                    float tileW = 180.0f;
+                    float topH = 65.0f;
+                    float botY = bodyTop + 72.0f;
+                    float botH = 67.0f;
+                    RectangleF[] slots =
                     {
-                        r.G.FillPath(wGrad, wPath);
+                        new RectangleF(bodyLeft, bodyTop, tileW, topH),
+                        new RectangleF(bodyLeft + tileW + 8.0f, bodyTop, tileW, topH),
+                        new RectangleF(bodyLeft, botY, tileW, botH),
+                        new RectangleF(bodyLeft + tileW + 8.0f, botY, tileW, botH)
+                    };
+
+                    int count = Math.Min(4, chosen.Count);
+                    for (int idx = 0; idx < count; ++idx)
+                    {
+                        RenderIslandWidgetSlot(r, state, s, theme, chosen[idx], slots[idx], onToggleDesktopWidget);
                     }
-                    r.DrawLucideIcon("sun", t2.X + 26.0f, t2.Y + 25.0f, 25.0f, Color.FromArgb(255, 245, 184, 46), 2.0f);
-                    r.DrawTextStr($"{s.WeatherTempC}\u00B0", new RectangleF(t2.X + 48.0f, t2.Y + 5.0f, 92.0f, 36.0f), 27.0f, true, theme.TextPrimary);
-                    r.DrawTextStr($"Sunny \u00B7 {s.WeatherCity}", new RectangleF(t2.X + 12.0f, t2.Bottom - 21.0f, 98.0f, 17.0f), 11.5f, false, Color.FromArgb(235, 239, 237, 232));
-                    r.DrawTextStr($"H {s.WeatherHighC}\u00B0  L {s.WeatherLowC}\u00B0", new RectangleF(t2.Right - 80.0f, t2.Bottom - 21.0f, 68.0f, 17.0f), 11.5f, false, Color.FromArgb(220, 239, 237, 232), hAlign: StringAlignment.Far);
-                    r.AddHitRegion("w-weather", t2, () => onToggleDesktopWidget?.Invoke(WidgetType.MinimalWeather));
 
-                    // Battery: clean icon + This PC + vibrant green bar + 100%
-                    var t3 = new RectangleF(bodyLeft + tileW + 8.0f, botY, tileW, botH);
-                    r.FillRoundedRect(t3, 14.0f, Color.FromArgb(24, 255, 255, 255));
-                    r.DrawLucideIcon("battery", t3.X + 21.0f, t3.Y + 35.0f, 16.0f, theme.TextMuted);
-                    r.DrawTextStr("This PC", new RectangleF(t3.X + 33.0f, t3.Y + 26.0f, 54.0f, 18.0f), 12.5f, false, theme.TextPrimary);
-                    int pct = Math.Clamp(state.Telemetry.BatteryPercent, 0, 100);
-                    var track = new RectangleF(t3.X + 86.0f, t3.Y + 32.5f, 38.0f, 5.0f);
-                    r.FillRoundedRect(track, 2.5f, Color.FromArgb(36, 255, 255, 255));
-                    if (pct > 0)
-                        r.FillRoundedRect(new RectangleF(track.X, track.Y, Math.Max(4.0f, track.Width * pct / 100.0f), 5.0f), 2.5f, Color.FromArgb(255, 42, 209, 91));
-                    r.DrawTextStr($"{pct}%", new RectangleF(t3.Right - 54.0f, t3.Y + 26.0f, 46.0f, 18.0f), 12.5f, false, Color.FromArgb(255, 42, 209, 91), hAlign: StringAlignment.Far);
-                    r.AddHitRegion("w-stats", t3, () => onToggleDesktopWidget?.Invoke(WidgetType.PcStats));
-
-                    // Central floating reminder bell with dark cutout ring
+                    // Central floating reminder bell: opens Reminders view synced with NotchPixel Deck
                     float bellCx = bodyLeft + 184.0f;
-                    float bellCy = bodyTop + 66.0f;
-                    r.FillCircle(bellCx, bellCy, 21.5f, Color.FromArgb(255, 11, 11, 12));
-                    r.FillCircle(bellCx, bellCy, 18.5f, Color.FromArgb(255, 34, 34, 36));
+                    float bellCy = bodyTop + 68.5f;
+                    r.FillCircle(bellCx, bellCy, 21.5f, theme.IsLight ? Color.FromArgb(255, 236, 236, 238) : Color.FromArgb(255, 11, 11, 12));
+                    r.FillCircle(bellCx, bellCy, 18.5f, theme.IsLight ? Color.FromArgb(255, 222, 222, 226) : Color.FromArgb(255, 34, 34, 36));
                     r.DrawCircle(bellCx, bellCy, 18.5f, Color.FromArgb(44, 255, 255, 255), 1.0f);
                     r.DrawLucideIcon("bell", bellCx, bellCy, 15.5f, theme.TextPrimary);
                     r.AddHitRegion("w-bell", new RectangleF(bellCx - 20, bellCy - 20, 40, 40), () =>
                     {
-                        var rem = new ReminderItem { Id = ConfigManager.GetTickMs(), Title = "Quick Reminder", DueTimestampMs = ConfigManager.GetTickMs() + 1000 };
-                        state.Reminders.Add(rem);
-                        state.ActiveReminderId = rem.Id;
-                        state.ToastPopupType = TopPopupType.Reminder;
-                        state.ToastTitle = rem.Title;
-                        state.ToastIsReminder = true;
-                        state.ToastActive = true;
-                        state.ToastAccent = Color.FromArgb(255, 255, 159, 10);
-                        state.ToastExpireMs = ConfigManager.GetTickMs() + 60000;
+                        state.ShowRemindersInWidgets = true;
                     });
                     break;
                 }
@@ -1860,67 +1819,90 @@ namespace OpenPixel.UI
                     break;
                 }
 
-                case PanelId.Calls:
+                case PanelId.PhoneDeck:
                 {
-                    // Mic ring on the left, live meeting on the right: title + Join,
-                    // Speakers and Microphone rows with their underline and Test pills,
-                    // then Check camera.
-                    float micCx = bodyLeft + 70.0f;
-                    float micCy = bodyTop + 48.0f;
-                    bool muted = state.GlobalMicMuted;
-                    Color live = muted ? Color.FromArgb(255, 255, 69, 58) : Color.FromArgb(255, 42, 209, 91);
-                    float clock = ConfigManager.GetTickMs() / 1000.0f;
-                    float level = Math.Clamp(state.MicPeakLevel, 0.0f, 1.0f);
-                    float pulse = muted ? 0.0f : 0.5f + 0.5f * MathF.Sin(clock * 2.6f);
+                    // Dedicated Phone / Deck tab directly inside the notch (image_4)
+                    r.DrawTextStr("Your phone, as a deck for this PC",
+                        new RectangleF(bodyLeft, bodyTop + 2.0f, bodyW, 22.0f), 13.0f, true, theme.TextPrimary);
+                    r.DrawTextStr("A trackpad, music, apps, and modes for games and slides.",
+                        new RectangleF(bodyLeft, bodyTop + 26.0f, bodyW, 18.0f), 10.6f, false, theme.TextMuted);
+                    r.DrawTextStr("With the free NotchPixel Deck app on your phone.",
+                        new RectangleF(bodyLeft, bodyTop + 44.0f, bodyW, 18.0f), 10.6f, false, theme.TextMuted);
+                    string line3 = s.PcDeckEnabled
+                        ? $"On \u00B7 {state.LocalPrivateIp}:{s.PcDeckTlsPort} \u00B7 Code {state.ActivePairingCode}"
+                        : "Off until you turn it on. Allow each phone here.";
+                    r.DrawTextStr(line3,
+                        new RectangleF(bodyLeft, bodyTop + 62.0f, bodyW, 18.0f), 10.6f, s.PcDeckEnabled, s.PcDeckEnabled ? theme.Accent : theme.TextMuted);
 
-                    r.FillCircle(micCx, micCy, 42.0f + level * 4.0f, Color.FromArgb((int)(20 + 12 * pulse), live.R, live.G, live.B));
-                    r.FillCircle(micCx, micCy, 34.0f, Color.FromArgb(52, live.R, live.G, live.B));
-                    r.DrawCircle(micCx, micCy, 34.0f, Color.FromArgb(230, live.R, live.G, live.B), 2.0f);
-                    r.DrawLucideIcon("mic", micCx, micCy, 24.0f, theme.TextPrimary, 1.8f);
-                    r.DrawTextStr(muted ? "Muted" : "Hearing you", new RectangleF(micCx - 62.0f, bodyTop + 91.0f, 124.0f, 17.0f), 12.5f, false, live, hAlign: StringAlignment.Center);
-                    r.DrawTextStr(muted ? "Click to unmute" : "Click to mute", new RectangleF(micCx - 62.0f, bodyTop + 108.0f, 124.0f, 17.0f), 12.5f, false, theme.TextPrimary, hAlign: StringAlignment.Center);
-                    r.AddHitRegion("calls-mic", new RectangleF(micCx - 42.0f, micCy - 42.0f, 84.0f, 84.0f), () => WindowsSystemHooks.ToggleGlobalMicMute(state));
-
-                    float rx = bodyLeft + 142.0f;
-                    float rw = 222.0f;
-                    r.DrawTextStr(s.UpcomingMeetingTitle, new RectangleF(rx, bodyTop + 0.0f, 150.0f, 20.0f), 14.0f, false, theme.TextPrimary);
-
-                    var joinBtn = new RectangleF(bodyLeft + 296.0f, bodyTop + 1.0f, 68.0f, 28.0f);
-                    r.FillRoundedRect(joinBtn, 14.0f, Color.FromArgb(255, 42, 209, 91));
-                    r.DrawLucideIcon("video", joinBtn.X + 15.0f, joinBtn.Y + 14.0f, 11.5f, Color.FromArgb(255, 12, 12, 14));
-                    r.DrawTextStr("Join", new RectangleF(joinBtn.X + 24.0f, joinBtn.Y, 40.0f, 28.0f), 11.5f, true, Color.FromArgb(255, 12, 12, 14));
-                    r.AddHitRegion("calls-join", joinBtn, () =>
+                    float btnY = bodyTop + 94.0f;
+                    var turnOnBtn = new RectangleF(bodyLeft, btnY, 92.0f, 28.0f);
+                    r.FillRoundedRect(turnOnBtn, 14.0f, Color.FromArgb(255, 240, 240, 242));
+                    r.DrawTextStr(s.PcDeckEnabled ? "\u23FB Turn off" : "\u23FB Turn on", turnOnBtn, 10.5f, true, Color.FromArgb(255, 16, 16, 18), hAlign: StringAlignment.Center);
+                    r.AddHitRegion("deck-toggle", turnOnBtn, () =>
                     {
-                        if (string.IsNullOrWhiteSpace(s.UpcomingMeetingUrl)) return;
-                        try { Process.Start(new ProcessStartInfo(s.UpcomingMeetingUrl) { UseShellExecute = true }); } catch { }
+                        if (LocalNetworkServers.DetectPrivateNetworkAndLocalIp(state))
+                        {
+                            s.PcDeckEnabled = !s.PcDeckEnabled;
+                            if (s.PcDeckEnabled) LocalNetworkServers.GenerateTwoMinutePairingCode(state);
+                            LocalNetworkServers.ApplyDeckEnabled(state);
+                            ConfigManager.SaveAtomic(state);
+                        }
                     });
 
-                    r.DrawLucideIcon("calendar", rx + 7.0f, bodyTop + 31.0f, 12.0f, theme.TextMuted);
-                    r.DrawTextStr(s.UpcomingMeetingTime, new RectangleF(rx + 18.0f, bodyTop + 22.0f, 180.0f, 18.0f), 12.0f, false, theme.TextPrimary);
-
-                    void DeviceRow(string id, float y, string icon, string label, Color tintFill, Color underline, Action test)
+                    var getAppBtn = new RectangleF(turnOnBtn.Right + 10.0f, btnY, 112.0f, 28.0f);
+                    r.FillRoundedRect(getAppBtn, 14.0f, Color.FromArgb(30, 255, 255, 255));
+                    r.DrawLucideIcon("smartphone", getAppBtn.X + 16.0f, getAppBtn.Y + 14.0f, 12.0f, theme.TextPrimary);
+                    r.DrawTextStr("Get the app", new RectangleF(getAppBtn.X + 26.0f, getAppBtn.Y, getAppBtn.Width - 32.0f, getAppBtn.Height), 10.5f, true, theme.TextPrimary);
+                    r.AddHitRegion("deck-getapp", getAppBtn, () =>
                     {
-                        var row = new RectangleF(rx, bodyTop + y, rw, 25.0f);
-                        r.FillRoundedRect(row, 9.0f, Color.FromArgb(22, 255, 255, 255));
-                        var sel = new RectangleF(row.X, row.Y, 108.0f, row.Height);
-                        r.FillRoundedRect(sel, 9.0f, tintFill);
-                        r.FillRoundedRect(new RectangleF(sel.X + 4.0f, sel.Bottom - 2.5f, sel.Width - 6.0f, 2.5f), 1.2f, underline);
-                        r.DrawLucideIcon(icon, sel.X + 16.0f, sel.Y + 12.5f, 13.5f, theme.TextPrimary);
-                        r.DrawTextStr(label, new RectangleF(sel.X + 27.0f, sel.Y, 72.0f, 25.0f), 12.0f, false, theme.TextPrimary);
-                        r.DrawLucideIcon("chevron-down", sel.Right - 6.0f, sel.Y + 12.5f, 9.0f, theme.TextMuted);
-                        var testBtn = new RectangleF(row.Right - 42.0f, row.Y + 4.0f, 36.0f, 17.0f);
-                        r.FillRoundedRect(testBtn, 8.5f, Color.FromArgb(24, 255, 255, 255));
-                        r.DrawTextStr("Test", testBtn, 11.0f, false, theme.TextPrimary, hAlign: StringAlignment.Center);
-                        r.AddHitRegion(id + "-test", testBtn, test);
-                        r.AddHitRegion(id, sel, test);
-                    }
-                    DeviceRow("calls-spk", 48.0f, "headphones", "Speakers", Color.FromArgb(145, 28, 66, 86), Color.FromArgb(255, 68, 168, 232), () => System.Media.SystemSounds.Asterisk.Play());
-                    DeviceRow("calls-mic-src", 80.0f, "mic", "Microphone", Color.FromArgb(145, 26, 68, 42), Color.FromArgb(255, 42, 209, 91), () => System.Media.SystemSounds.Asterisk.Play());
+                        state.SendToPhoneUrl = LocalNetworkServers.BuildDeckPairingQrPayload(state);
+                        state.SendToPhoneQrActive = true;
+                        PhoneTransferQrWindow.ShowFor(state);
+                    });
+                    break;
+                }
 
-                    var camBtn = new RectangleF(rx, bodyTop + 112.0f, 115.0f, 24.0f);
-                    r.FillRoundedRect(camBtn, 12.0f, Color.FromArgb(26, 255, 255, 255));
-                    r.DrawLucideIcon("camera", camBtn.X + 16.0f, camBtn.Y + 12.0f, 14.0f, theme.TextPrimary);
-                    r.DrawTextStr("Check camera", new RectangleF(camBtn.X + 26.0f, camBtn.Y, 88.0f, 24.0f), 11.5f, true, theme.TextPrimary);
+                case PanelId.Calls:
+                {
+                    // "Ready for calls" two-column layout (image_5)
+                    float micCx = bodyLeft + 62.0f;
+                    float micCy = bodyTop + 50.0f;
+                    bool muted = state.GlobalMicMuted;
+                    Color live = muted ? Color.FromArgb(255, 255, 69, 58) : Color.FromArgb(255, 48, 209, 88);
+
+                    r.FillCircle(micCx, micCy, 36.0f, muted ? Color.FromArgb(46, 255, 69, 58) : Color.FromArgb(32, 255, 255, 255));
+                    if (muted || state.Sensors.MicActive)
+                        r.DrawCircle(micCx, micCy, 36.0f, Color.FromArgb(200, live.R, live.G, live.B), 1.6f);
+                    r.DrawLucideIcon("mic", micCx, micCy, 24.0f, muted ? live : theme.TextPrimary, 1.8f);
+                    r.DrawTextStr(muted ? "Mic muted" : "Mic on", new RectangleF(micCx - 56.0f, bodyTop + 92.0f, 112.0f, 17.0f), 11.5f, true, muted ? live : theme.TextPrimary, hAlign: StringAlignment.Center);
+                    r.DrawTextStr(muted ? "Click to unmute" : "Click to mute", new RectangleF(micCx - 56.0f, bodyTop + 109.0f, 112.0f, 16.0f), 10.2f, false, theme.TextMuted, hAlign: StringAlignment.Center);
+                    r.AddHitRegion("calls-mic", new RectangleF(micCx - 40.0f, micCy - 40.0f, 80.0f, 80.0f), () => WindowsSystemHooks.ToggleGlobalMicMute(state));
+
+                    float rx = bodyLeft + 132.0f;
+                    float rw = bodyW - 132.0f;
+                    r.DrawTextStr("Ready for calls", new RectangleF(rx, bodyTop + 2.0f, rw, 22.0f), 13.5f, true, theme.TextPrimary);
+                    r.DrawTextStr("Test your mic and speaker before you join.", new RectangleF(rx, bodyTop + 24.0f, rw, 16.0f), 10.2f, false, theme.TextMuted);
+
+                    void DeviceRow(string id, float y, string icon, string label, Action test)
+                    {
+                        var row = new RectangleF(rx, bodyTop + y, rw, 28.0f);
+                        r.FillRoundedRect(row, 14.0f, Color.FromArgb(24, 255, 255, 255));
+                        r.DrawLucideIcon(icon, row.X + 16.0f, row.Y + 14.0f, 13.0f, theme.TextMuted);
+                        r.DrawTextStr(label, new RectangleF(row.X + 30.0f, row.Y, rw - 92.0f, row.Height), 10.5f, false, theme.TextPrimary);
+                        r.DrawLucideIcon("chevron-down", row.Right - 58.0f, row.Y + 14.0f, 9.5f, theme.TextMuted);
+                        var testBtn = new RectangleF(row.Right - 46.0f, row.Y + 4.0f, 40.0f, 20.0f);
+                        r.FillRoundedRect(testBtn, 10.0f, Color.FromArgb(26, 255, 255, 255));
+                        r.DrawTextStr("Test", testBtn, 10.0f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
+                        r.AddHitRegion(id + "-test", testBtn, test);
+                        r.AddHitRegion(id, new RectangleF(row.X, row.Y, rw - 50.0f, row.Height), test);
+                    }
+                    DeviceRow("calls-spk", 48.0f, "headphones", "Speakers (Default)", () => System.Media.SystemSounds.Asterisk.Play());
+                    DeviceRow("calls-mic-src", 82.0f, "mic", "Microphone Array", () => System.Media.SystemSounds.Asterisk.Play());
+
+                    var camBtn = new RectangleF(rx, bodyTop + 116.0f, 118.0f, 26.0f);
+                    r.FillRoundedRect(camBtn, 13.0f, Color.FromArgb(26, 255, 255, 255));
+                    r.DrawLucideIcon("camera", camBtn.X + 16.0f, camBtn.Y + 13.0f, 13.5f, theme.TextPrimary);
+                    r.DrawTextStr("Check camera", new RectangleF(camBtn.X + 28.0f, camBtn.Y, 86.0f, camBtn.Height), 10.5f, true, theme.TextPrimary);
                     r.AddHitRegion("calls-cam", camBtn, () => { try { Process.Start(new ProcessStartInfo("microsoft.windows.camera:") { UseShellExecute = true }); } catch { } });
                     break;
                 }
@@ -2095,6 +2077,258 @@ namespace OpenPixel.UI
         }
 
 
+
+        // ====================================================================
+        // 2x2 Island Widget Slot Renderer (Today, Focus timer, Weather,
+        // System stats with sparklines, Clock, To do, Photos, Batteries)
+        // ====================================================================
+        private static void RenderIslandWidgetSlot(
+            LiquidGlassRenderer r, GlobalAppState state, AppSettings s, ThemeSpec theme,
+            string widgetId, RectangleF t, Action<WidgetType> onToggleDesktopWidget)
+        {
+            Color tileBg = theme.IsLight ? Color.FromArgb(26, 12, 12, 14) : Color.FromArgb(24, 255, 255, 255);
+            r.FillRoundedRect(t, 14.0f, tileBg);
+
+            // Clicking any island widget tile pins/unpins it on the desktop (registered before inner buttons so controls still win)
+            if (onToggleDesktopWidget != null)
+            {
+                WidgetType mappedType = widgetId switch
+                {
+                    "calendar" => WidgetType.Calendar,
+                    "focus" => WidgetType.FocusTimer,
+                    "weather" => WidgetType.MinimalWeather,
+                    "stats" => WidgetType.PcStats,
+                    "clock" => WidgetType.DayClock,
+                    "todo" => WidgetType.TodoList,
+                    "photos" => WidgetType.Photos,
+                    "batteries" => WidgetType.Batteries,
+                    _ => WidgetType.DayClock
+                };
+                r.AddHitRegion($"island-wtile-{widgetId}", t, () => onToggleDesktopWidget(mappedType));
+            }
+
+            switch (widgetId)
+            {
+                case "calendar":
+                {
+                    // Display-only Today widget: 27 FRI NOV, Week 48, 7-day strip.
+                    // Clicking does NOT launch Windows Calendar or any external app.
+                    DateTime now = DateTime.Now;
+                    int week = System.Globalization.ISOWeek.GetWeekOfYear(now);
+                    r.DrawTextStr(now.Day.ToString(), new RectangleF(t.X + 10, t.Y + 2, 42, 26), 19.0f, true, theme.TextPrimary);
+                    r.DrawTextStr(now.ToString("ddd").ToUpperInvariant(), new RectangleF(t.X + 44, t.Y + 4, 40, 12), 8.0f, true, theme.TextPrimary);
+                    r.DrawTextStr(now.ToString("MMM").ToUpperInvariant(), new RectangleF(t.X + 44, t.Y + 15, 40, 12), 8.0f, false, theme.TextMuted);
+                    r.DrawTextStr($"Week {week}", new RectangleF(t.Right - 64, t.Y + 6, 54, 14), 8.2f, false, theme.TextMuted, hAlign: StringAlignment.Far);
+
+                    string[] dows = { "S", "M", "T", "W", "T", "F", "S" };
+                    int todayDow = (int)now.DayOfWeek;
+                    DateTime sunday = now.AddDays(-todayDow);
+                    float colW = (t.Width - 14.0f) / 7.0f;
+                    for (int d = 0; d < 7; ++d)
+                    {
+                        float dx = t.X + 7.0f + d * colW;
+                        bool isToday = d == todayDow;
+                        if (isToday)
+                        {
+                            // Exact two-tone rounded capsule matching live NotchPixel Today widget
+                            var capRect = new RectangleF(dx + 1, t.Y + 31, colW - 2, 30);
+                            r.FillRoundedRect(capRect, 8.0f, theme.IsLight ? Color.FromArgb(30, 12, 12, 14) : Color.FromArgb(46, 255, 255, 255));
+                            var botHalf = new RectangleF(capRect.X, capRect.Y + 14.0f, capRect.Width, 16.0f);
+                            r.FillRoundedRect(botHalf, 7.0f, theme.IsLight ? Color.FromArgb(56, 12, 12, 14) : Color.FromArgb(92, 255, 255, 255));
+                        }
+                        r.DrawTextStr(dows[d], new RectangleF(dx, t.Y + 32, colW, 13), 7.8f, isToday, isToday ? theme.TextPrimary : theme.TextMuted, hAlign: StringAlignment.Center);
+                        r.DrawTextStr(sunday.AddDays(d).Day.ToString(), new RectangleF(dx, t.Y + 45, colW, 14), 8.5f, isToday, isToday ? theme.TextPrimary : theme.TextMuted, mono: true, hAlign: StringAlignment.Center);
+                    }
+                    break;
+                }
+
+                case "focus":
+                {
+                    // Focus timer: circular ring + 25:00 + play/pause + - / + buttons
+                    int totalSec = Math.Max(60, state.FocusTimerTotalMin * 60);
+                    int remSec = Math.Clamp(state.FocusTimerRemainingSec, 0, totalSec);
+                    float frac = Math.Clamp(remSec / (float)totalSec, 0.0f, 1.0f);
+
+                    float ringD = 46.0f;
+                    var ring = new RectangleF(t.X + 10, t.Y + (t.Height - ringD) * 0.5f, ringD, ringD);
+                    using (var trackPen = new Pen(Color.FromArgb(48, theme.TextPrimary.R, theme.TextPrimary.G, theme.TextPrimary.B), 2.8f))
+                        r.G.DrawEllipse(trackPen, ring);
+                    if (frac > 0.005f)
+                    {
+                        using var progPen = new Pen(theme.Accent, 2.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                        r.G.DrawArc(progPen, ring, -90.0f, 360.0f * frac);
+                    }
+                    r.DrawTextStr(FormatTimeSec(remSec), ring, 9.2f, true, theme.TextPrimary, mono: true, hAlign: StringAlignment.Center);
+
+                    float tx = ring.Right + 10.0f;
+                    r.DrawTextStr("Focus timer", new RectangleF(tx, t.Y + 6, t.Right - tx - 8, 16), 10.2f, true, theme.TextPrimary);
+                    r.DrawTextStr($"{state.FocusTimerTotalMin} + {state.FocusTimerBreakMin} min", new RectangleF(tx, t.Y + 21, t.Right - tx - 8, 14), 8.6f, false, theme.TextMuted);
+
+                    float btnY = t.Y + 46.0f;
+                    var playRect = new RectangleF(tx, btnY - 10, 20, 20);
+                    r.FillCircle(tx + 10, btnY, 10.0f, theme.TextPrimary);
+                    r.DrawLucideIcon(state.FocusTimerRunning ? "pause" : "play", tx + 10.5f, btnY, 8.0f,
+                        ThemeSpec.AdaptiveInkForBackground(theme.TextPrimary), 1.5f);
+                    r.AddHitRegion("w-focus-play", playRect, () =>
+                    {
+                        state.FocusTimerRunning = !state.FocusTimerRunning;
+                        if (state.FocusTimerRunning && state.FocusTimerRemainingSec <= 0)
+                            state.FocusTimerRemainingSec = state.FocusTimerTotalMin * 60;
+                    });
+
+                    var minusRect = new RectangleF(tx + 26, btnY - 9, 22, 18);
+                    r.FillRoundedRect(minusRect, 6.0f, Color.FromArgb(32, 255, 255, 255));
+                    r.DrawTextStr("\u2212", minusRect, 10.5f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
+                    r.AddHitRegion("w-focus-minus", minusRect, () =>
+                    {
+                        state.FocusTimerTotalMin = Math.Max(5, state.FocusTimerTotalMin - 5);
+                        if (!state.FocusTimerRunning) state.FocusTimerRemainingSec = state.FocusTimerTotalMin * 60;
+                    });
+
+                    var plusRect = new RectangleF(tx + 52, btnY - 9, 22, 18);
+                    r.FillRoundedRect(plusRect, 6.0f, Color.FromArgb(32, 255, 255, 255));
+                    r.DrawTextStr("+", plusRect, 10.5f, true, theme.TextPrimary, hAlign: StringAlignment.Center);
+                    r.AddHitRegion("w-focus-plus", plusRect, () =>
+                    {
+                        state.FocusTimerTotalMin = Math.Min(90, state.FocusTimerTotalMin + 5);
+                        if (!state.FocusTimerRunning) state.FocusTimerRemainingSec = state.FocusTimerTotalMin * 60;
+                    });
+                    break;
+                }
+
+                case "weather":
+                {
+                    r.DrawTextStr($"{s.WeatherTempC}\u00B0", new RectangleF(t.X + 12, t.Y + 4, 74, 32), 23.0f, true, theme.TextPrimary);
+                    r.DrawLucideIcon("sun", t.Right - 24, t.Y + 21, 18.0f, theme.TextPrimary, 1.5f);
+                    r.DrawLine(t.X + 12, t.Bottom - 22, t.Right - 12, t.Bottom - 22, Color.FromArgb(26, theme.TextPrimary.R, theme.TextPrimary.G, theme.TextPrimary.B), 1.0f);
+                    r.DrawTextStr("Partly cloudy", new RectangleF(t.X + 12, t.Bottom - 19, 86, 16), 9.0f, false, theme.TextMuted);
+                    r.DrawTextStr($"H {s.WeatherHighC}\u00B0 L {s.WeatherLowC}\u00B0", new RectangleF(t.Right - 82, t.Bottom - 19, 70, 16), 9.0f, false, theme.TextMuted, hAlign: StringAlignment.Far);
+                    r.AddHitRegion("w-weather", t, () => onToggleDesktopWidget?.Invoke(WidgetType.MinimalWeather));
+                    break;
+                }
+
+                case "stats":
+                {
+                    // System stats: CPU (white), GPU (purple), RAM (orange fill) sparklines + temps + network
+                    float cpu = Math.Clamp(state.Telemetry.CpuPercent, 0, 100);
+                    float gpu = Math.Clamp(state.Telemetry.GpuPercent, 0, 100);
+                    float ram = Math.Clamp(state.Telemetry.RamPercent, 0, 100);
+
+                    DrawStatSparkRow(r, "CPU", $"{(int)MathF.Round(cpu)}%", state.Telemetry.CpuTempC > 0 ? $"{(int)MathF.Round(state.Telemetry.CpuTempC)}\u00B0" : "",
+                        t.X + 10, t.Y + 6, t.Width - 20, cpu / 100.0f, Color.FromArgb(255, 245, 245, 247), false, theme);
+                    DrawStatSparkRow(r, "GPU", $"{(int)MathF.Round(gpu)}%", state.Telemetry.GpuTempC > 0 ? $"{(int)MathF.Round(state.Telemetry.GpuTempC)}\u00B0" : "",
+                        t.X + 10, t.Y + 21, t.Width - 20, gpu / 100.0f, Color.FromArgb(255, 192, 108, 255), false, theme);
+                    DrawStatSparkRow(r, "RAM", $"{(int)MathF.Round(ram)}%", "",
+                        t.X + 10, t.Y + 36, t.Width - 20, ram / 100.0f, Color.FromArgb(255, 255, 159, 28), true, theme);
+
+                    string downStr = state.Telemetry.NetDownKbps >= 1.0f ? $"{(int)MathF.Round(state.Telemetry.NetDownKbps)} KB/s" : $"{(int)MathF.Round(state.Telemetry.NetDownKbps * 1024)} B/s";
+                    string upStr = state.Telemetry.NetUpKbps >= 1.0f ? $"{(int)MathF.Round(state.Telemetry.NetUpKbps)} KB/s" : $"{(int)MathF.Round(state.Telemetry.NetUpKbps * 1024)} B/s";
+                    r.DrawTextStr($"\u2193 {downStr}", new RectangleF(t.X + 10, t.Bottom - 17, 78, 14), 8.2f, false, theme.TextMuted, mono: true);
+                    r.DrawTextStr($"\u2191 {upStr}", new RectangleF(t.X + 92, t.Bottom - 17, 78, 14), 8.2f, false, theme.TextMuted, mono: true);
+                    break;
+                }
+
+                case "clock":
+                {
+                    DateTime dt = DateTime.Now;
+                    string time = s.Use24HourClock ? dt.ToString("HH:mm") : dt.ToString("h:mm");
+                    r.DrawTextStr(time, new RectangleF(t.X + 10, t.Y + 4, 90, 28), 21.0f, true, theme.TextPrimary, mono: true);
+                    if (!s.Use24HourClock)
+                        r.DrawTextStr(dt.ToString("tt").ToUpperInvariant(), new RectangleF(t.X + 86, t.Y + 13, 30, 14), 9.0f, true, theme.TextMuted);
+                    r.DrawTextStr(dt.ToString("ddd").ToUpperInvariant(), new RectangleF(t.Right - 42, t.Y + 8, 32, 14), 9.5f, false, theme.TextMuted, hAlign: StringAlignment.Far);
+                    r.DrawLucideIcon("globe", t.X + 16, t.Bottom - 14, 11.5f, theme.TextMuted);
+                    string worldCity = string.IsNullOrWhiteSpace(s.WorldClockCity) ? "London" : s.WorldClockCity;
+                    DateTime worldDt = DateTime.UtcNow.AddHours(s.WorldClockOffsetHours);
+                    string worldTime = s.Use24HourClock ? worldDt.ToString("HH:mm") : worldDt.ToString("h:mm tt");
+                    r.DrawTextStr(worldCity, new RectangleF(t.X + 26, t.Bottom - 22, 68, 16), 10.0f, false, theme.TextPrimary);
+                    r.DrawTextStr(worldTime, new RectangleF(t.Right - 78, t.Bottom - 22, 68, 16), 9.6f, false, theme.TextMuted, mono: true, hAlign: StringAlignment.Far);
+                    break;
+                }
+
+                case "todo":
+                {
+                    r.DrawTextStr("To do", new RectangleF(t.X + 12, t.Y + 6, 48, 16), 11.0f, true, theme.TextPrimary);
+                    float plusCx = t.Right - 18, plusCy = t.Y + 15;
+                    r.FillCircle(plusCx, plusCy, 9.5f, Color.FromArgb(26, 255, 255, 255));
+                    r.DrawLucideIcon("plus", plusCx, plusCy, 10.0f, theme.TextMuted);
+                    r.AddHitRegion("w-todo-add", new RectangleF(plusCx - 11, plusCy - 11, 22, 22), () => onToggleDesktopWidget?.Invoke(WidgetType.TodoList));
+
+                    int rowCount = Math.Min(2, state.TodoList.Count);
+                    if (rowCount == 0)
+                        r.DrawTextStr("Nothing to do. + adds one.", new RectangleF(t.X + 12, t.Y + 28, t.Width - 24, 18), 9.6f, false, theme.TextFaint);
+                    for (int i = 0; i < rowCount; ++i)
+                    {
+                        TodoItem todo = state.TodoList[i];
+                        float ty = t.Y + 26 + i * 17;
+                        if (todo.Done)
+                        {
+                            r.FillCircle(t.X + 18, ty + 6, 5.2f, theme.Accent);
+                            r.DrawLucideIcon("check", t.X + 18, ty + 6, 7.5f, ThemeSpec.AdaptiveInkForBackground(theme.Accent), 1.8f);
+                        }
+                        else
+                        {
+                            r.DrawCircle(t.X + 18, ty + 6, 5.0f, Color.FromArgb(128, theme.TextPrimary.R, theme.TextPrimary.G, theme.TextPrimary.B), 1.2f);
+                        }
+                        r.DrawTextStr(todo.Text, new RectangleF(t.X + 28, ty - 2, t.Width - 36, 16), 10.0f, false, theme.TextPrimary);
+                        int capT = i;
+                        r.AddHitRegion($"w-todo-{i}", new RectangleF(t.X + 10, ty - 3, t.Width - 20, 18), () => state.TodoList[capT].Done = !state.TodoList[capT].Done);
+                    }
+                    break;
+                }
+
+                case "photos":
+                {
+                    r.DrawLucideIcon("image", t.X + 26, t.Y + t.Height * 0.5f, 18.0f, theme.TextMuted);
+                    r.DrawTextStr("Photos", new RectangleF(t.X + 44, t.Y + 14, t.Width - 52, 18), 11.0f, true, theme.TextPrimary);
+                    r.DrawTextStr("Local gallery", new RectangleF(t.X + 44, t.Y + 32, t.Width - 52, 16), 9.0f, false, theme.TextMuted);
+                    break;
+                }
+
+                default: // batteries
+                {
+                    r.DrawLucideIcon("battery", t.X + 21, t.Y + 34, 16.0f, theme.TextMuted);
+                    r.DrawTextStr("This PC", new RectangleF(t.X + 33, t.Y + 25, 54, 18), 11.5f, false, theme.TextPrimary);
+                    int pct = Math.Clamp(state.Telemetry.BatteryPercent, 0, 100);
+                    var track = new RectangleF(t.X + 86, t.Y + 31.5f, 38, 5);
+                    r.FillRoundedRect(track, 2.5f, Color.FromArgb(36, 255, 255, 255));
+                    if (pct > 0)
+                        r.FillRoundedRect(new RectangleF(track.X, track.Y, Math.Max(4.0f, track.Width * pct / 100.0f), 5.0f), 2.5f, Color.FromArgb(255, 42, 209, 91));
+                    r.DrawTextStr($"{pct}%", new RectangleF(t.Right - 52, t.Y + 25, 44, 18), 11.0f, false, Color.FromArgb(255, 42, 209, 91), mono: true, hAlign: StringAlignment.Far);
+                    break;
+                }
+            }
+        }
+
+        private static void DrawStatSparkRow(
+            LiquidGlassRenderer r, string label, string pctText, string tempText,
+            float x, float y, float w, float norm01, Color lineCol, bool fillArea, ThemeSpec theme)
+        {
+            r.DrawTextStr(label, new RectangleF(x, y, 30, 13), 8.2f, false, theme.TextMuted, mono: true);
+            float gx = x + 34.0f;
+            float gw = Math.Max(30.0f, w - 98.0f);
+            float gy = y + 9.0f;
+            float peakY = gy - Math.Clamp(norm01, 0.05f, 1.0f) * 7.0f;
+            PointF[] pts =
+            {
+                new PointF(gx, gy),
+                new PointF(gx + gw * 0.35f, gy - norm01 * 2.0f),
+                new PointF(gx + gw * 0.65f, gy - norm01 * 3.5f),
+                new PointF(gx + gw * 0.80f, peakY),
+                new PointF(gx + gw, peakY)
+            };
+            if (fillArea)
+            {
+                using var fillBrush = new SolidBrush(Color.FromArgb(52, lineCol.R, lineCol.G, lineCol.B));
+                r.G.FillPolygon(fillBrush, new[] { new PointF(gx, gy + 1), pts[0], pts[1], pts[2], pts[3], pts[4], new PointF(gx + gw, gy + 1) });
+            }
+            using (var pen = new Pen(lineCol, 1.4f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                r.G.DrawLines(pen, pts);
+            r.FillCircle(gx + gw, peakY, 2.0f, lineCol);
+
+            r.DrawTextStr(pctText, new RectangleF(x + w - 62, y, 32, 13), 8.5f, true, theme.TextPrimary, mono: true, hAlign: StringAlignment.Far);
+            if (!string.IsNullOrEmpty(tempText))
+                r.DrawTextStr(tempText, new RectangleF(x + w - 28, y, 28, 13), 8.5f, false, theme.TextMuted, mono: true, hAlign: StringAlignment.Far);
+        }
 
         private static void RenderProgressBar(
             LiquidGlassRenderer r, GlobalAppState state,

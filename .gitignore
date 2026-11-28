@@ -10,7 +10,11 @@ App/main.apk
 .tmp/
 .nuget_packages/
 .dotnet_appdata/
+.dotnet_localappdata/
 .dotnet_home/
+publish/
+*.apk
+*.user
 
 # Root-copied compiled binaries & runtime DLLs (rebuilt automatically on build/publish)
 /*.exe
